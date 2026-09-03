@@ -6,6 +6,7 @@ export default defineConfig({
   plugins: [react()],
   server: {
     host: true,
+    allowedHosts: ['.box-dex.win', 'kanban-board.box-dex.win'],
     watch: {
       usePolling: true,
       interval: 200,
