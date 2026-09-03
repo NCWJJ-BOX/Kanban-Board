@@ -1,91 +1,215 @@
 # API Design — Request / Response
 
-**อ้างอิงจาก:** โค้ดจริง (`backend/boards/urls.py`, `backend/accounts/urls.py`, serializers/views)
+**อ้างอิงจาก:** Implementation จริงใน `backend/boards/urls.py`, `backend/accounts/urls.py`, Serializers และ Views
 **Framework:** Django REST Framework 5 + SimpleJWT
 
 ---
 
-## 0. ข้อตกลงกลาง (Conventions)
+## 0. API Conventions
 
-| หัวข้อ | กติกา |
-|---|---|
-| Base URL | `/api/v1/` |
-| รูปแบบข้อมูล | JSON (`Content-Type: application/json`) |
-| Authentication | `Authorization: Bearer <access_token>` — ทุก endpoint ยกเว้น register/login/refresh |
-| Token type | JWT access (อายุ 60 นาที) + refresh — response จาก auth ใช้คีย์ `access_token` / `refresh_token` |
-| ID รูปแบบ | UUID string ทั้งหมด |
-| Error รูปแบบ | DRF default: `400 {"<field>": ["<msg>"]}` / `403 {"detail": "..."}` / `404 {"detail": "Not found."}`<br>Custom: `{"error": "<CODE>", "message": "<ข้อความ>"}` (คงที่ เข้าใจง่าย frontend ตรวจสอบได้) |
-| List response | JSON array ดิบ (ไม่มี wrapper object) |
-| Mutation ที่ไม่คืน body | `204 No Content` |
+| หัวข้อ                              | รายละเอียด                                                                |
+| ----------------------------------- | ------------------------------------------------------------------------- |
+| **Base URL**                        | `/api/v1/`                                                                |
+| **Data Format**                     | JSON (`Content-Type: application/json`)                                   |
+| **Authentication**                  | `Authorization: Bearer <access_token>` สำหรับ Endpoint ที่ต้องยืนยันตัวตน |
+| **Token**                           | JWT Access Token อายุ 60 นาที และ Refresh Token                           |
+| **Token Response**                  | ใช้ key `access_token` และ `refresh_token`                                |
+| **ID Format**                       | UUID String                                                               |
+| **Error Response**                  | ใช้รูปแบบมาตรฐานของ DRF หรือ Custom Error ที่กำหนดไว้                     |
+| **List Response**                   | JSON Array โดยตรง ไม่มี wrapper object                                    |
+| **Mutation ที่ไม่มี Response Body** | HTTP `204 No Content`                                                     |
 
-**Permission โดยย่อ (บังคับด้วย `boards/permissions.py`):**
-- อ่าน board / column / task → สมาชิก board เท่านั้น (`HasBoardAccess`)
-- แก้ไข column/task/tag/assignee → owner หรือ editor (`CanEditBoard`)
-- เปลี่ยนชื่อ/ลบ board, invite, จัดการสมาชิก → owner เท่านั้น
-- CRUD board เอง (สร้างใหม่) → user ที่ล็อกอินทุกคน
+### Authentication
+
+Endpoint ที่ไม่ต้อง Authentication:
+
+* Register
+* Login
+* Refresh Token
+
+Endpoint อื่น ๆ ต้องส่ง Access Token ผ่าน HTTP Header:
+
+```http
+Authorization: Bearer <access_token>
+```
+
+### Error Response
+
+ใช้ทั้ง DRF Default Error และ Custom Error ตามลักษณะของ Endpoint
+
+```json
+{
+  "error": "VALIDATION_ERROR",
+  "message": "Validation Error",
+  "detail": {}
+}
+```
+
+ตัวอย่าง HTTP Status:
+
+* `400 Bad Request` — ข้อมูล Request ไม่ถูกต้อง
+* `401 Unauthorized` — Authentication ไม่ถูกต้องหรือ Token ไม่ถูกต้อง
+* `403 Forbidden` — ไม่มีสิทธิ์ดำเนินการ
+* `404 Not Found` — ไม่พบ Resource
+* `409 Conflict` — Resource ซ้ำ เช่น Username หรือ Email
+
+### Permission Model
+
+| Operation                            | Permission               |
+| ------------------------------------ | ------------------------ |
+| อ่าน Board / Column / Task           | สมาชิกของ Board          |
+| แก้ไข Column / Task / Tag / Assignee | Owner หรือ Editor        |
+| เปลี่ยนชื่อ / ลบ Board               | Owner เท่านั้น           |
+| Invite สมาชิก                        | Owner เท่านั้น           |
+| จัดการสมาชิก                         | Owner เท่านั้น           |
+| สร้าง Board                          | User ที่ Login แล้วทุกคน |
+
+ระบบใช้ `HasBoardAccess` และ `CanEditBoard` ในการควบคุมสิทธิ์การเข้าถึงและแก้ไขข้อมูล
 
 ---
 
-## 1. Auth (`/auth/`)
+## 1. Authentication
 
-### POST `/auth/register` — สมัครสมาชิก (ได้ token ทันที)
+### POST `/auth/register`
+
+สร้างบัญชีผู้ใช้ใหม่ และออก JWT Token ให้ทันทีหลังสมัครสำเร็จ
+
+**Request**
+
 ```json
-// Request
 {
   "username": "numchai",
   "email": "numchai@example.com",
   "password": "P@ssw0rd123"
 }
-// Response 201
+```
+
+**Response `201 Created`**
+
+```json
 {
-  "user": { "id": "uuid", "username": "numchai", "email": "numchai@example.com", "created_at": "2026-09-04T10:00:00Z" },
+  "user": {
+    "id": "uuid",
+    "username": "numchai",
+    "email": "numchai@example.com",
+    "created_at": "2026-09-04T10:00:00Z"
+  },
   "access_token": "jwt...",
   "refresh_token": "jwt...",
   "token_type": "bearer",
   "expires_in": 3600
 }
-// Response 409 — email หรือ username ซ้ำ
-{ "error": "EMAIL_ALREADY_EXISTS", "message": "Email Already Exists", "detail": {"email": ["..."]} }
-// Response 400 — password ไม่ผ่าน (min 8 ตัว ฯลฯ)
-{ "error": "VALIDATION_ERROR", "message": "Validation Error", "detail": {...} }
 ```
 
-### POST `/auth/login` — ล็อกอินด้วย email
+**Response `409 Conflict` — Username หรือ Email ซ้ำ**
+
 ```json
-// Request
-{ "email": "numchai@example.com", "password": "P@ssw0rd123" }
-// Response 200
 {
-  "access_token": "jwt...",
-  "refresh_token": "jwt...",
-  "token_type": "bearer",
-  "expires_in": 3600
+  "error": "EMAIL_ALREADY_EXISTS",
+  "message": "Email Already Exists",
+  "detail": {
+    "email": ["..."]
+  }
 }
-// Response 401
-{ "error": "INVALID_CREDENTIALS", "message": "อีเมลหรือรหัสผ่านไม่ถูกต้อง" }
 ```
 
-### POST `/auth/refresh` — ขอ access token ใหม่
-```json
-// Request
-{ "refresh": "jwt..." }
-// Response 200
-{ "access_token": "jwt...", "refresh_token": "jwt...", "token_type": "bearer" }
-```
+**Response `400 Bad Request` — Validation Error**
 
-### GET `/auth/me` — ข้อมูล user ปัจจุบัน (authed)
 ```json
-// Response 200
-{ "id": "uuid", "username": "numchai", "email": "numchai@example.com", "created_at": "2026-09-04T10:00:00Z" }
+{
+  "error": "VALIDATION_ERROR",
+  "message": "Validation Error",
+  "detail": {}
+}
 ```
 
 ---
 
-## 2. Boards (`/boards/`)
+### POST `/auth/login`
 
-### GET `/boards` — รายการ board ที่ user เป็นเจ้าของ/สมาชิก
+เข้าสู่ระบบด้วย Email และ Password
+
+**Request**
+
 ```json
-// Response 200
+{
+  "email": "numchai@example.com",
+  "password": "P@ssw0rd123"
+}
+```
+
+**Response `200 OK`**
+
+```json
+{
+  "access_token": "jwt...",
+  "refresh_token": "jwt...",
+  "token_type": "bearer",
+  "expires_in": 3600
+}
+```
+
+**Response `401 Unauthorized`**
+
+```json
+{
+  "error": "INVALID_CREDENTIALS",
+  "message": "อีเมลหรือรหัสผ่านไม่ถูกต้อง"
+}
+```
+
+---
+
+### POST `/auth/refresh`
+
+ออก Access Token ใหม่โดยใช้ Refresh Token
+
+**Request**
+
+```json
+{
+  "refresh": "jwt..."
+}
+```
+
+**Response `200 OK`**
+
+```json
+{
+  "access_token": "jwt...",
+  "refresh_token": "jwt...",
+  "token_type": "bearer"
+}
+```
+
+---
+
+### GET `/auth/me`
+
+ดึงข้อมูลของผู้ใช้ที่กำลัง Authentication อยู่
+
+**Response `200 OK`**
+
+```json
+{
+  "id": "uuid",
+  "username": "numchai",
+  "email": "numchai@example.com",
+  "created_at": "2026-09-04T10:00:00Z"
+}
+```
+
+---
+
+## 2. Boards
+
+### GET `/boards`
+
+ดึงรายการ Board ที่ผู้ใช้เป็นเจ้าของหรือเป็นสมาชิก
+
+**Response `200 OK`**
+
+```json
 [
   {
     "id": "uuid",
@@ -93,7 +217,13 @@
     "description": "ทดสอบโปรเซส dev workflow",
     "owner": "uuid",
     "role": "owner",
-    "members": [ { "id": "uuid", "username": "numchai", "role": "owner" } ],
+    "members": [
+      {
+        "id": "uuid",
+        "username": "numchai",
+        "role": "owner"
+      }
+    ],
     "column_count": 3,
     "task_count": 7,
     "created_at": "...",
@@ -102,268 +232,436 @@
 ]
 ```
 
-### POST `/boards` — สร้าง board (ผู้สร้างกลายเป็น owner อัตโนมัติ)
-```json
-// Request
-{ "name": "Project Alpha", "description": "optional" }
-// Response 201 — shape เดียวกับ GET /boards (รายการเดียว)
-{ "id": "uuid", "name": "Project Alpha", "description": "optional", "owner": "uuid", "role": "owner", ... }
-// Response 400 — name ว่าง
-{ "name": ["Name is required."] }
-```
+### POST `/boards`
 
-### GET `/boards/{board_id}` — รายละเอียด board ประกอบ columns + tags (ที่ฝั่งใช้แสดงหน้า Kanban)
+สร้าง Board ใหม่ โดยผู้สร้างจะได้รับ Role เป็น `owner` อัตโนมัติ
+
+**Request**
+
 ```json
-// Response 200
 {
-  "id": "uuid", "name": "Process Dev", "description": "...", "owner": "uuid",
-  "role": "owner",
-  "members": [ { "id": "uuid", "username": "numchai", "role": "owner" } ],
-  "column_count": 3, "task_count": 7, "created_at": "...", "updated_at": "...",
-  "columns": [
-    {
-      "id": "uuid", "board": "uuid", "name": "To Do", "position": 0.0, "created_at": "...",
-      "tasks": [
-        {
-          "id": "uuid", "column": "uuid", "title": "ออกแบบ ER Diagram",
-          "description": "...", "position": 0.0,
-          "assignees": [ { "id": "uuid", "username": "friend", "email": "friend@x.com" } ],
-          "tags": [ { "id": "uuid", "name": "urgent", "color": "#ef4444" } ],
-          "created_at": "...", "updated_at": "..."
-        }
-      ]
-    }
-  ],
-  "tags": [ { "id": "uuid", "board": "uuid", "name": "urgent", "color": "#ef4444" } ]
+  "name": "Project Alpha",
+  "description": "optional"
 }
 ```
 
-### PATCH `/boards/{board_id}` — เปลี่ยนชื่อ / แก้ไข description (**owner เท่านั้น**)
+**Response `201 Created`**
+
+Response มีโครงสร้างเดียวกับ Board ที่ได้จาก `GET /boards`
+
+### GET `/boards/{board_id}`
+
+ดึงรายละเอียด Board พร้อม Columns, Tasks และ Tags สำหรับแสดงผล Kanban Board
+
+Response ประกอบด้วย:
+
+* Board information
+* Members
+* Columns
+* Tasks
+* Assignees
+* Tags
+* Statistics
+
+### PATCH `/boards/{board_id}`
+
+แก้ไขชื่อหรือรายละเอียดของ Board
+
+**Permission:** Owner เท่านั้น
+
+**Request**
+
 ```json
-// Request
-{ "name": "Process Dev v2", "description": "คำอธิบายใหม่" }
-// Response 200
-{ "id": "uuid", "name": "Process Dev v2", "description": "คำอธิบายใหม่", "owner": "uuid", "created_at": "..." }
-// Response 403 — ไม่ใช่ owner
-{ "detail": "You do not have permission to perform this action." }
+{
+  "name": "Process Dev v2",
+  "description": "คำอธิบายใหม่"
+}
 ```
 
-### DELETE `/boards/{board_id}` — ลบ board (owner เท่านั้น, soft delete)
-```json
-// Response 204 (No Content)
-```
+**Response `200 OK`**
+
+คืนข้อมูล Board ที่ถูกแก้ไข
+
+### DELETE `/boards/{board_id}`
+
+ลบ Board
+
+**Permission:** Owner เท่านั้น
+
+**Response:** `204 No Content`
+
+ระบบใช้ Soft Delete เพื่อป้องกันการลบข้อมูลออกจากฐานข้อมูลโดยตรง
 
 ---
 
-## 3. Columns (`/boards/{board_id}/columns`, `/columns/{column_id}`)
+## 3. Columns
 
-### GET `/boards/{board_id}/columns` — รายการ column
+### GET `/boards/{board_id}/columns`
+
+ดึงรายการ Column ภายใน Board
+
+### POST `/boards/{board_id}/columns`
+
+สร้าง Column ใหม่ โดยระบบคำนวณ `position` จาก Column สุดท้ายโดยอัตโนมัติ
+
+**Request**
+
 ```json
-// Response 200
-[ { "id": "uuid", "board": "uuid", "name": "To Do", "position": 0.0, "created_at": "...", "tasks": [...] } ]
+{
+  "name": "In Progress"
+}
 ```
 
-### POST `/boards/{board_id}/columns` — สร้าง column (`position` คำนวณอัตโนมัติจากตัวสุดท้าย)
+**Response `201 Created`**
+
 ```json
-// Request
-{ "name": "In Progress" }
-// Response 201 — shape ตาม GET (หนึ่งตัว)
-{ "id": "uuid", "board": "uuid", "name": "In Progress", "position": 1.0, "created_at": "...", "tasks": [] }
+{
+  "id": "uuid",
+  "board": "uuid",
+  "name": "In Progress",
+  "position": 1.0,
+  "created_at": "...",
+  "tasks": []
+}
 ```
 
-### PATCH `/columns/{column_id}` — แก้ชื่อ column (onBlur จากหน้า UI)
+### PATCH `/columns/{column_id}`
+
+แก้ไขชื่อ Column
+
+ใช้สำหรับการแก้ไขชื่อจาก UI เช่น เมื่อผู้ใช้แก้ไขชื่อแล้วออกจาก Input (`onBlur`)
+
+**Request**
+
 ```json
-// Request
-{ "name": "Doing" }
-// Response 200 — shape ตาม ColumnWriteSerializer (ไม่ฝัง tasks)
-{ "id": "uuid", "board": "uuid", "name": "Doing", "position": 1.0 }
+{
+  "name": "Doing"
+}
 ```
 
-### DELETE `/columns/{column_id}` — ลบ column พร้อม task ทั้งหมดในนั้น (CASCADE ระดับ DB)
-```json
-// Response 204
-```
+### DELETE `/columns/{column_id}`
+
+ลบ Column และ Task ที่อยู่ภายใน Column
+
+**Response:** `204 No Content`
+
+การลบ Task ที่เกี่ยวข้องดำเนินการผ่าน `CASCADE` ของ Database Relationship
 
 ---
 
-## 4. Tasks (`/columns/{column_id}/tasks`, `/tasks/{task_id}`)
+## 4. Tasks
 
 ### GET `/columns/{column_id}/tasks`
-```json
-// Response 200
-[ { "id": "uuid", "column": "uuid", "title": "...", "description": "...", "position": 0.0,
-    "assignees": [...], "tags": [...], "created_at": "...", "updated_at": "..." } ]
-```
 
-### POST `/columns/{column_id}/tasks` — สร้าง task (`position` อัตโนมัติ)
-```json
-// Request
-{ "title": "ออกแบบ API", "description": "optional" }
-// Response 201
-{ "id": "uuid", "column": "uuid", "title": "ออกแบบ API", "description": "optional",
-  "position": 1.0, "assignees": [], "tags": [], "created_at": "...", "updated_at": "..." }
-// Response 400 — title ว่าง
-{ "title": ["Title is required."] }
-```
+ดึงรายการ Task ภายใน Column
 
-### GET `/tasks/{task_id}` — ตัวเดียว พร้อม assignees/tags
-```json
-// Response 200 — shape task เต็ม (มี assignees, tags)
-```
+### POST `/columns/{column_id}/tasks`
 
-### PATCH `/tasks/{task_id}` — แก้ title / description
-```json
-// Request
-{ "title": "ออกแบบ API v2", "description": "อัปเดต" }
-// Response 200 — shape task (ไม่มี assignees/tags ใน response นี้)
-{ "id": "uuid", "column": "uuid", "title": "ออกแบบ API v2", "description": "อัปเดต",
-  "position": 1.0, "created_at": "..." }
-```
+สร้าง Task ใหม่ โดยระบบกำหนด `position` ให้อัตโนมัติ
 
-### DELETE `/tasks/{task_id}` — ลบ task
-```json
-// Response 204
-```
+**Request**
 
-### PATCH `/tasks/{task_id}/move` — ย้าย column / ปรับตำแหน่ง (drag-and-drop)
-**แนวคิด fractional indexing:** frontend คำนวณ `position` ใหม่ = ค่าเฉลี่ยของ task ที่อยู่ก่อน/หลังจุด drop แล้วส่งมาทั้งหมด 1 ครั้ง
 ```json
-// Request 1 — ย้ายไปอีก column + ระบุตำแหน่ง
-{ "column_id": "uuid-of-target-column", "position": 1.5 }
-// Request 2 — เลื่อนใน column เดียว (ไม่ต้องส่ง column_id)
-{ "position": 2.5 }
-// Response 200 — shape task เต็ม (assignees, tags)
 {
-  "id": "uuid", "column": "uuid-of-target-column", "title": "...",
-  "position": 1.5, "assignees": [...], "tags": [...], "created_at": "...", "updated_at": "..."
+  "title": "ออกแบบ API",
+  "description": "optional"
 }
-// Response 400 — column ไม่ใช่ board เดียวกัน
-{ "error": "Column does not belong to the same board." }
-// Response 400 — position ไม่ใช่ตัวเลข / อนันต์
-{ "error": "position must be a number." }
+```
+
+**Response `201 Created`**
+
+```json
+{
+  "id": "uuid",
+  "column": "uuid",
+  "title": "ออกแบบ API",
+  "description": "optional",
+  "position": 1.0,
+  "assignees": [],
+  "tags": [],
+  "created_at": "...",
+  "updated_at": "..."
+}
+```
+
+### GET `/tasks/{task_id}`
+
+ดึงรายละเอียด Task พร้อม Assignees และ Tags
+
+### PATCH `/tasks/{task_id}`
+
+แก้ไข Title หรือ Description ของ Task
+
+**Request**
+
+```json
+{
+  "title": "ออกแบบ API v2",
+  "description": "อัปเดต"
+}
+```
+
+### DELETE `/tasks/{task_id}`
+
+ลบ Task
+
+**Response:** `204 No Content`
+
+---
+
+### PATCH `/tasks/{task_id}/move`
+
+ย้าย Task ระหว่าง Column หรือเปลี่ยนลำดับภายใน Column
+
+ระบบใช้แนวคิด **Fractional Indexing** เพื่อลดความจำเป็นในการ Update Position ของ Task หลายรายการ
+
+Frontend คำนวณ Position จาก Task ที่อยู่ก่อนและหลังตำแหน่งที่ Drop แล้วส่งค่าใหม่มายัง Backend
+
+**ย้ายไป Column อื่น**
+
+```json
+{
+  "column_id": "uuid-of-target-column",
+  "position": 1.5
+}
+```
+
+**เปลี่ยนตำแหน่งภายใน Column เดิม**
+
+```json
+{
+  "position": 2.5
+}
+```
+
+**Response `200 OK`**
+
+คืน Task ที่ถูกย้าย พร้อม Assignees และ Tags
+
+**Validation Error**
+
+```json
+{
+  "error": "Column does not belong to the same board."
+}
+```
+
+```json
+{
+  "error": "position must be a number."
+}
 ```
 
 ---
 
-## 5. Tags (`/boards/{board_id}/tags`, `/tasks/{task_id}/tags`)
+## 5. Tags
 
 ### GET `/boards/{board_id}/tags`
+
+ดึงรายการ Tag ของ Board
+
+### POST `/boards/{board_id}/tags`
+
+สร้าง Tag ใหม่
+
+**Request**
+
 ```json
-// Response 200
-[ { "id": "uuid", "board": "uuid", "name": "urgent", "color": "#ef4444" } ]
+{
+  "name": "urgent",
+  "color": "#ef4444"
+}
 ```
 
-### POST `/boards/{board_id}/tags` — สร้าง tag ใหม่ของ board
+**Response `201 Created`**
+
 ```json
-// Request
-{ "name": "urgent", "color": "#ef4444" }
-// Response 201
-{ "id": "uuid", "board": "uuid", "name": "urgent", "color": "#ef4444" }
-// Response 400 — สีไม่ใช่ hex
-{ "color": ["Color must be a hex value like #6366f1"] }
+{
+  "id": "uuid",
+  "board": "uuid",
+  "name": "urgent",
+  "color": "#ef4444"
+}
 ```
 
-### POST `/tasks/{task_id}/tags` — เอาต์ tag ใส่ task (body รับ `tag_id`)
+### POST `/tasks/{task_id}/tags`
+
+เพิ่ม Tag ให้กับ Task
+
+**Request**
+
 ```json
-// Request
-{ "tag_id": "uuid" }
-// Response 200 — task เต็ม พร้อม tags ที่อัปเดต
-{ "id": "uuid", ..., "tags": [{ "id": "uuid", "name": "urgent", "color": "#ef4444" }], ... }
-// Response 400 — tag คนละ board
-{ "error": "Tag does not belong to this board." }
+{
+  "tag_id": "uuid"
+}
 ```
 
-### DELETE `/tasks/{task_id}/tags/{tag_id}` — เอาออก
-```json
-// Response 200 — task เต็ม พร้อม tags ที่เหลือ
-```
+ระบบตรวจสอบว่า Tag ต้องเป็นของ Board เดียวกับ Task
+
+### DELETE `/tasks/{task_id}/tags/{tag_id}`
+
+นำ Tag ออกจาก Task
+
+**Response:** `200 OK`
+
+คืน Task พร้อมรายการ Tag ที่เหลือ
 
 ---
 
-## 6. Assignees — ผู้รับผิดชอบ (`/tasks/{task_id}/assignees`)
+## 6. Assignees
 
-### POST `/tasks/{task_id}/assignees` — มอบหมายงาน + **สร้าง Notification ให้ผู้ถูกมอบหมายอัตโนมัติ**
+### POST `/tasks/{task_id}/assignees`
+
+กำหนดผู้รับผิดชอบ Task
+
+**Request**
+
 ```json
-// Request
-{ "user_id": "uuid" }
-// Response 200 — task เต็มพร้อม assignees
-{ "id": "uuid", ..., "assignees": [{ "id": "uuid", "username": "friend", "email": "friend@x.com" }], ... }
-// หลังสำเร็จ: INSERT เข้า notifications (type=assignment) สำหรับ user ที่ถูก assign
-//   message: คุณถูกมอบหมายงาน "<title>" ในบอร์ด "<board.name>"
+{
+  "user_id": "uuid"
+}
 ```
 
-### DELETE `/tasks/{task_id}/assignees/{user_id}` — เอาออก
-```json
-// Response 200 — task เต็มพร้อม assignees ที่เหลือ
+หลังจาก Assign สำเร็จ ระบบจะสร้าง Notification ให้ผู้ใช้ที่ได้รับมอบหมายโดยอัตโนมัติ
+
+```text
+Type: assignment
+Message:
+คุณถูกมอบหมายงาน "<task.title>" ในบอร์ด "<board.name>"
 ```
+
+**Response `200 OK`**
+
+คืน Task พร้อมรายการ Assignees ล่าสุด
+
+### DELETE `/tasks/{task_id}/assignees/{user_id}`
+
+ยกเลิกการมอบหมาย Task ให้กับผู้ใช้
+
+**Response:** `200 OK`
+
+คืน Task พร้อม Assignees ที่เหลือ
 
 ---
 
-## 7. สมาชิก board (`/boards/{board_id}/members`)
+## 7. Board Members
 
 ### GET `/boards/{board_id}/members`
+
+ดึงรายการสมาชิกของ Board
+
+**Response `200 OK`**
+
 ```json
-// Response 200
-[ { "id": "uuid", "username": "numchai", "email": "numchai@example.com" } ]
-```
-
-### DELETE `/boards/{board_id}/members/{user_id}` — เจ้าของไล่สมาชิกออก (**owner เท่านั้น**)
-```json
-// Response 204
-// Response 400 — ลบเจ้าของเองไม่ได้
-{ "error": "Cannot remove the board owner." }
-```
-
----
-
-## 8. Invitations (`/boards/{board_id}/invite`, `/invitations/`)
-
-### POST `/boards/{board_id}/invite` — ส่งคำเชิญ (**owner เท่านั้น**)
-- ถ้าอีเมลนั้นเป็น user ในระบบอยู่แล้ว → สร้าง `Notification` (type=system) แจ้ง "คุณได้รับคำเชิญ..."
-- คำเชิญซ้ำ (board+email & ยัง pending) → คืน invitation เดิม (ไม่สร้างซ้ำ)
-```json
-// Request
-{ "email": "friend@example.com", "role": "editor" }
-// Response 201
-{
-  "id": "uuid", "board": "uuid", "board_name": "Process Dev",
-  "email": "friend@example.com", "role": "editor",
-  "status": "pending", "created_at": "..."
-}
-// Response 400 — email ไม่ถูกต้อง
-{ "email": ["Invalid email address."] }
-```
-
-### GET `/invitations` — คำเชิญที่รอรับของ user (ตาม email + status=pending)
-```json
-// Response 200
-[ { "id": "uuid", "board": "uuid", "board_name": "...", "email": "me@x.com", "role": "viewer", "status": "pending", "created_at": "..." } ]
-```
-
-### POST `/invitations/{invitation_id}/accept` — รับคำเชิญ → เข้าเป็นสมาชิก board
-```json
-// Response 200
-{ "id": "uuid", "name": "Process Dev", "message": "Joined board successfully" }
-// Response 403 — ไม่ใช่คนที่ถูกเชิญ
-{ "error": "This invitation is not for you." }
-// Response 400 — เชิญถูกใช้/หมดอายุแล้ว
-{ "error": "Invitation is no longer pending." }
-```
-
----
-
-## 9. Notifications (`/notifications/`)
-
-### GET `/notifications` — แจ้งเตือนของฉัน (เรียงใหม่สุดก่อน, ตัดที่ 50)
-```json
-// Query param: ?unread=1 เอาเฉพาะที่ยังไม่อ่าน
-// Response 200
 [
   {
     "id": "uuid",
-    "type": "assignment",          // assignment | system
+    "username": "numchai",
+    "email": "numchai@example.com"
+  }
+]
+```
+
+### DELETE `/boards/{board_id}/members/{user_id}`
+
+นำสมาชิกออกจาก Board
+
+**Permission:** Owner เท่านั้น
+
+ระบบไม่อนุญาตให้ Owner ลบตัวเองออกจาก Board
+
+**Response:** `204 No Content`
+
+---
+
+## 8. Invitations
+
+### POST `/boards/{board_id}/invite`
+
+ส่งคำเชิญให้ผู้ใช้เข้าร่วม Board
+
+**Permission:** Owner เท่านั้น
+
+**Request**
+
+```json
+{
+  "email": "friend@example.com",
+  "role": "editor"
+}
+```
+
+หาก Email เป็นผู้ใช้ที่มีบัญชีอยู่แล้ว ระบบจะสร้าง Notification เพื่อแจ้งเตือนโดยอัตโนมัติ
+
+หากมี Invitation เดิมที่ยังอยู่ในสถานะ `pending` ระบบจะคืน Invitation เดิมแทนการสร้างรายการซ้ำ
+
+**Response `201 Created`**
+
+```json
+{
+  "id": "uuid",
+  "board": "uuid",
+  "board_name": "Process Dev",
+  "email": "friend@example.com",
+  "role": "editor",
+  "status": "pending",
+  "created_at": "..."
+}
+```
+
+### GET `/invitations`
+
+ดึง Invitation ที่ผู้ใช้ปัจจุบันได้รับและยังอยู่ในสถานะ `pending`
+
+ระบบค้นหาจาก Email ของผู้ใช้
+
+### POST `/invitations/{invitation_id}/accept`
+
+ยอมรับ Invitation และเพิ่มผู้ใช้เข้าเป็นสมาชิกของ Board
+
+**Response `200 OK`**
+
+```json
+{
+  "id": "uuid",
+  "name": "Process Dev",
+  "message": "Joined board successfully"
+}
+```
+
+ระบบตรวจสอบ:
+
+* Invitation ต้องเป็นของผู้ใช้ที่กำลัง Login
+* Invitation ต้องมีสถานะ `pending`
+* Invitation ที่ถูกใช้แล้วหรือหมดอายุจะไม่สามารถ Accept ซ้ำได้
+
+---
+
+## 9. Notifications
+
+### GET `/notifications`
+
+ดึง Notification ของผู้ใช้ปัจจุบัน
+
+* เรียงจากรายการใหม่ไปเก่า
+* จำกัดสูงสุด 50 รายการ
+* รองรับ Filter เฉพาะรายการที่ยังไม่ได้อ่าน
+
+**Query Parameter**
+
+```text
+GET /notifications?unread=1
+```
+
+**Response `200 OK`**
+
+```json
+[
+  {
+    "id": "uuid",
+    "type": "assignment",
     "message": "คุณถูกมอบหมายงาน \"ออกแบบ ER Diagram\" ในบอร์ด \"Process Dev\"",
-    "task": "uuid-or-null",        // null เมื่อเป็นระบบ
+    "task": "uuid-or-null",
     "task_title": "ออกแบบ ER Diagram",
     "is_read": false,
     "created_at": "..."
@@ -371,10 +669,30 @@
 ]
 ```
 
-### PATCH `/notifications/{notification_id}/read` — กดอ่านแล้ว
+### PATCH `/notifications/{notification_id}/read`
+
+เปลี่ยนสถานะ Notification เป็นอ่านแล้ว
+
+**Response `200 OK`**
+
 ```json
-// Response 200
-{ "id": "uuid", "type": "assignment", "message": "...", "task": "uuid", "task_title": "...", "is_read": true, "created_at": "..." }
+{
+  "id": "uuid",
+  "type": "assignment",
+  "message": "...",
+  "task": "uuid",
+  "task_title": "ออกแบบ ER Diagram",
+  "is_read": true,
+  "created_at": "..."
+}
 ```
 
-> **Frontend polling:** `frontend/src/hooks/useNotifications.js` poll ทุก 5 วินาที + markRead/markAllRead แบบ optimistic + กริ่งแสดง badge จำนวน unread
+### Frontend Notification Flow
+
+Frontend ใช้ Polling เพื่อตรวจสอบ Notification ใหม่ทุก **5 วินาที**
+
+* `useNotifications.js`
+* Optimistic `markRead`
+* Optimistic `markAllRead`
+* แสดงจำนวน Unread ผ่าน Notification Badge
+* แสดงสถานะผ่าน Notification Bell
