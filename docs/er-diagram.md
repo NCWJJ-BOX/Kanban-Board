@@ -1,8 +1,9 @@
 # ER Diagram — Kanban Board
 
-**อ้างอิงจาก:** models จริงในโค้ด (`backend/accounts/models.py`, `backend/boards/models.py`)
-**ฐานข้อมูล:** PostgreSQL (Docker)
-**PK = Primary Key (UUID v4) · FK = Foreign Key · UK = Unique**
+**อ้างอิงจาก:** Models ที่ใช้งานจริงใน `backend/accounts/models.py` และ `backend/boards/models.py`
+**Database:** PostgreSQL (Docker)
+**Notation:** PK = Primary Key · FK = Foreign Key · UK = Unique Key
+**Primary Key:** UUID v4
 
 ```mermaid
 erDiagram
@@ -109,49 +110,251 @@ erDiagram
 
 ---
 
-## สรุปความสัมพันธ์ (Cardinality)
+## 1. Relationship Overview
 
-| ความสัมพันธ์ | แบบ | ผ่านตาราง | หมายเหตุ |
-|---|---|---|---|
-| users — boards (เจ้าของ) | 1 : N | `boards.owner_id` | เจ้าของ board |
-| users — boards (สมาชิก) | M : N | `board_members` | เก็บ `role` ระดับ board |
-| boards — columns | 1 : N | `columns.board_id` | |
-| columns — tasks | 1 : N | `tasks.column_id` | |
-| boards — tags | 1 : N | `tags.board_id` | tag เป็นของ board |
-| tasks — tags | M : N | `task_tags` | |
-| tasks — users (ผู้รับผิดชอบ) | M : N | `task_assignees` | |
-| boards — invitations | 1 : N | `invitations.board_id` | คำเชิญเข้าร่วม board |
-| users — invitations | 1 : N | `invitations.invited_by` | ผู้ส่งคำเชิญ |
-| users — notifications | 1 : N | `notifications.user_id` | ผู้ถูกแจ้งเตือน |
-| tasks — notifications | 1 : N | `notifications.task_id` | **nullable** — notification ของ invite ไม่ผูกกับ task |
+| Relationship            | Cardinality | Through                  | Description                                                         |
+| ----------------------- | ----------- | ------------------------ | ------------------------------------------------------------------- |
+| Users → Boards (Owner)  | 1 : N       | `boards.owner_id`        | ผู้ใช้หนึ่งคนสามารถเป็นเจ้าของหลาย Board                            |
+| Users ↔ Boards (Member) | M : N       | `board_members`          | สมาชิกสามารถเข้าร่วมได้หลาย Board และแต่ละ Board มีสมาชิกหลายคน     |
+| Boards → Columns        | 1 : N       | `columns.board_id`       | Board หนึ่งมีหลาย Column                                            |
+| Columns → Tasks         | 1 : N       | `tasks.column_id`        | Column หนึ่งมีหลาย Task                                             |
+| Boards → Tags           | 1 : N       | `tags.board_id`          | Tag ถูกกำหนดอยู่ภายใต้ Board                                        |
+| Tasks ↔ Tags            | M : N       | `task_tags`              | Task สามารถมีหลาย Tag และ Tag สามารถถูกใช้กับหลาย Task              |
+| Tasks ↔ Users           | M : N       | `task_assignees`         | Task สามารถมอบหมายให้หลาย User                                      |
+| Boards → Invitations    | 1 : N       | `invitations.board_id`   | Board สามารถมี Invitation หลายรายการ                                |
+| Users → Invitations     | 1 : N       | `invitations.invited_by` | User สามารถเป็นผู้ส่ง Invitation หลายรายการ                         |
+| Users → Notifications   | 1 : N       | `notifications.user_id`  | User สามารถมี Notification หลายรายการ                               |
+| Tasks → Notifications   | 1 : N       | `notifications.task_id`  | Notification สามารถอ้างอิง Task ได้ โดยเป็นความสัมพันธ์แบบ Nullable |
 
 ---
 
-## จุดออกแบบที่สำคัญ
+## 2. Design Decisions
 
-### 1. Fractional Indexing สำหรับการจัดเรียง (`position` เป็น `FloatField`)
-- ทั้ง `columns.position` และ `tasks.position` ใช้ตัวเลขทศนิยมแทน integer
-- เมื่อ drag หรือ drop task ไประหว่าง 2 ตำแหน่ง (เช่นระหว่าง `1.0` กับ `2.0`) ค่าใหม่ = `(1.0 + 2.0) / 2 = 1.5`
-- **ผลลัพธ์:** การ reorder ทำได้โดย **update แค่ 1 แถว** (O(1)) ไม่ต้อง shift ทุกแถวใน column → ลด write load อย่างมากเมื่อ board มี task จำนวนมาก
-- หมายเหตุ: ในระยะยาวถ้า float แคบเกินไป (เช่น `< 0.000001`) ต้องมี routine re-normalize สลับค่าใหม่เป็นจำนวนเต็มทั้ง column (normalization job)
+### 2.1 Fractional Indexing สำหรับการจัดลำดับ
 
-### 2. Soft Delete สำหรับ Board (`deleted_at`)
-- `Board.objects` (default manager) กรองแถวที่ `deleted_at IS NULL` ออก ใช้ใน API ปกติ
-- `Board.all_objects` ใช้ตอนต้องการเห็นทุกแถวรวมที่ลบแล้ว
-- `perform_destroy` ใน `BoardDetailView` เรียก `soft_delete()` แทนการลบจริง → รองรับการกู้คืนและ audit
-- หมายเหตุ: column/task ลบจริง (hard delete) เพื่อไม่ให้ข้อมูลขยะทับถม — ระดับ board เท่านั้นที่ soft delete
+ฟิลด์ `position` ของทั้ง `columns` และ `tasks` ใช้ `FloatField` เพื่อรองรับการจัดลำดับแบบ **Fractional Indexing**
 
-### 3. โมเดล Role ระดับ Board (`board_members.role`)
-- แยก `board_members` ออกจาก users/boards เพื่อเก็บ permission ระดับ board:
-  - `owner` — ลบ/rename board, จัดการสมาชิก, invite, แก้ไขทุกอย่าง
-  - `editor` — แก้ไข column/task/tag/assignee ได้ แต่ rename/ลบ board ไม่ได้
-  - `viewer` — ดูได้อย่างเดียว
-- constraint `UNIQUE(board_id, user_id)` ป้องกัน membership ซ้ำ
+ตัวอย่าง เมื่อ Task ถูกลากไปอยู่ระหว่าง Task ที่มี Position `1.0` และ `2.0`:
 
-### 4. Constraint ระดับข้อมูล (Integrity)
-- `UNIQUE(board, name)` บน columns และ tags — ป้องกัน column/tag ชื่อซ้ำใน board เดียว
-- `UNIQUE(task, tag)` และ `UNIQUE(task, user)` — ป้องกัน tag/assignee ซ้ำใน task เดียว
-- `users.email` และ `users.username` เป็น UK — login ด้วย email
+```text
+new_position = (1.0 + 2.0) / 2
+             = 1.5
+```
 
-### 5. ผู้ใช้ Login ด้วย Email
-- `User` สืบทอด `AbstractUser` โดยตั้ง `USERNAME_FIELD = 'email'` → JWT login ใช้ email/password ส่วน `username` เก็บไว้แสดงผล
+ข้อดีของแนวทางนี้คือสามารถเปลี่ยนลำดับของ Task ได้โดย **Update เฉพาะ Row ที่ถูกย้าย** แทนการปรับ Position ของ Task ทุกตัวที่อยู่ถัดลงไป
+
+```text
+Traditional Integer Ordering
+
+Task A = 0
+Task B = 1
+Task C = 2
+Task D = 3
+
+Move D → between A and B
+
+ต้อง Update:
+B → 2
+C → 3
+D → 1
+
+
+Fractional Indexing
+
+Task A = 0
+Task B = 1
+Task C = 2
+Task D = 3
+
+Move D → between A and B
+
+D → 0.5
+
+Update เพียง 1 Row
+```
+
+**ผลลัพธ์:** ลดจำนวน Database Write ในการ Reorder และช่วยให้ระบบรองรับ Board ที่มี Task จำนวนมากได้ดีขึ้น
+
+> **Long-term consideration:** หากค่าระหว่าง Position มีขนาดเล็กลงเรื่อย ๆ จากการ Insert ซ้ำ ๆ ระบบควรมี Normalization/Rebalancing Routine เพื่อจัดลำดับ Position ใหม่เป็นช่วงที่เหมาะสม
+
+---
+
+### 2.2 Soft Delete สำหรับ Board
+
+Board ใช้แนวทาง **Soft Delete** ผ่านฟิลด์:
+
+```text
+deleted_at
+```
+
+เมื่อ Board ถูกลบ ระบบจะบันทึกเวลาที่ลบแทนการลบ Row ออกจาก Database โดยตรง
+
+การเข้าถึงข้อมูลแบ่งเป็น:
+
+```text
+Board.objects
+    ↓
+เฉพาะ Board ที่ deleted_at IS NULL
+
+Board.all_objects
+    ↓
+รวมทั้ง Board ที่ถูก Soft Delete
+```
+
+ใน `BoardDetailView` การลบ Board จะเรียก `soft_delete()` แทนการทำ Hard Delete
+
+**ข้อดี**
+
+* สามารถรองรับการกู้คืนข้อมูลในอนาคต
+* ลดความเสี่ยงจากการลบข้อมูลโดยไม่ตั้งใจ
+* สามารถใช้เป็นข้อมูลสำหรับ Audit/Recovery ได้
+
+สำหรับ `Column` และ `Task` ระบบใช้ **Hard Delete** เนื่องจากเป็นข้อมูลที่อยู่ภายใต้ Lifecycle ของ Board และไม่จำเป็นต้องเก็บข้อมูลที่ถูกลบไว้ในระบบถาวร
+
+---
+
+### 2.3 Board-Level Role & Permission
+
+ระบบแยกข้อมูลสมาชิกออกมาไว้ใน `board_members` เพื่อรองรับ Role และ Permission ในระดับ Board
+
+```text
+board_members
+├── board_id
+├── user_id
+└── role
+```
+
+Role ที่รองรับ:
+
+| Role       | สิทธิ์                                                       |
+| ---------- | ------------------------------------------------------------ |
+| **owner**  | จัดการ Board, สมาชิก และ Invitation รวมถึงแก้ไขข้อมูลทั้งหมด |
+| **editor** | แก้ไข Column, Task, Tag และ Assignee                         |
+| **viewer** | อ่านข้อมูล Board ได้ แต่ไม่สามารถแก้ไขข้อมูล                 |
+
+การแยก Role ออกจาก `users` ทำให้ User คนเดียวสามารถมี Role แตกต่างกันในแต่ละ Board ได้
+
+ตัวอย่าง:
+
+```text
+User A
+├── Board A → owner
+├── Board B → editor
+└── Board C → viewer
+```
+
+มี Constraint:
+
+```text
+UNIQUE(board_id, user_id)
+```
+
+เพื่อป้องกัน User คนเดียวกันถูกเพิ่มเข้า Board เดียวกันซ้ำ
+
+---
+
+### 2.4 Database Integrity Constraints
+
+ระบบใช้ Database Constraint เพื่อรักษาความถูกต้องของข้อมูลในระดับ Database
+
+#### Column และ Tag
+
+```text
+UNIQUE(board, name)
+```
+
+ป้องกันชื่อ Column หรือ Tag ซ้ำกันภายใน Board เดียวกัน
+
+ตัวอย่าง:
+
+```text
+Board A
+├── To Do       ✓
+├── In Progress ✓
+└── To Do       ✗ duplicate
+```
+
+#### Task Tags
+
+```text
+UNIQUE(task, tag)
+```
+
+ป้องกันการเพิ่ม Tag เดิมเข้า Task ซ้ำ
+
+#### Task Assignees
+
+```text
+UNIQUE(task, user)
+```
+
+ป้องกันการ Assign User คนเดิมให้ Task เดียวกันซ้ำ
+
+#### User
+
+```text
+UNIQUE(email)
+UNIQUE(username)
+```
+
+ป้องกันบัญชีที่ใช้ Email หรือ Username ซ้ำกัน
+
+---
+
+### 2.5 Email-Based Authentication
+
+User Model สืบทอดจาก Django `AbstractUser` และกำหนดให้ Email เป็น Identifier หลักสำหรับ Authentication:
+
+```text
+USERNAME_FIELD = "email"
+```
+
+ดังนั้น Flow การ Login ของระบบคือ:
+
+```text
+Email + Password
+       ↓
+Authentication
+       ↓
+JWT Access Token + Refresh Token
+```
+
+ขณะที่ `username` ยังคงถูกเก็บไว้สำหรับใช้เป็น Display Name ภายในระบบ
+
+---
+
+## 3. Data Ownership
+
+โครงสร้างข้อมูลกำหนด Ownership เป็นลำดับชั้นดังนี้:
+
+```text
+User
+ │
+ ├── owns → Board
+ │            │
+ │            ├── Columns
+ │            │      └── Tasks
+ │            │
+ │            ├── Tags
+ │            │
+ │            ├── Members
+ │            │
+ │            └── Invitations
+ │
+ └── receives → Notifications
+                    │
+                    └── optionally references → Task
+```
+
+แนวทางนี้ทำให้สามารถตรวจสอบสิทธิ์จาก **Board Ownership → Membership → Resource** ได้อย่างชัดเจน และช่วยป้องกันการเข้าถึงข้อมูลข้าม Board
+
+---
+
+## 4. Design Summary
+
+Database Schema ถูกออกแบบโดยเน้น 4 ประเด็นหลัก:
+
+1. **Data Integrity** — ใช้ Foreign Key และ Unique Constraint ป้องกันข้อมูลไม่สอดคล้องกัน
+2. **Authorization** — แยก Board Membership และ Role เพื่อควบคุมสิทธิ์ในระดับ Resource
+3. **Efficient Reordering** — ใช้ Fractional Indexing เพื่อลดจำนวน Database Write ในการ Drag & Drop
+4. **Data Recovery** — ใช้ Soft Delete สำหรับ Board เพื่อรองรับ Recovery และ Audit ในอนาคต
