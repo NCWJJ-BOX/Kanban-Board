@@ -62,6 +62,7 @@ services:
       - /app/node_modules
     depends_on:
       - backend
+    command: npm run preview -- --host 0.0.0.0 --port 5173 --strictPort
 
 volumes:
   pgdata:
