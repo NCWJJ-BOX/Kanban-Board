@@ -124,9 +124,16 @@ export default function Kanban() {
 
   async function addColumn(e) {
     e.preventDefault()
-    if (!newColumnName.trim()) return
+    const name = newColumnName.trim()
+    if (!name) return
+    // Block known duplicates client-side so we never hit the API with a name
+    // the server will reject (name unique per board).
+    if (columns.some((c) => c.name === name)) {
+      setError('A column with this name already exists in this board.')
+      return
+    }
     try {
-      await api.post(`/boards/${boardId}/columns`, { name: newColumnName.trim() })
+      await api.post(`/boards/${boardId}/columns`, { name })
       setNewColumnName('')
       setAddingColumn(false)
       loadBoard()
