@@ -23,6 +23,20 @@ class TagSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError('Color must be a hex value like #6366f1')
         return value
 
+    def validate(self, attrs):
+        name = attrs.get('name', '').strip()
+        attrs['name'] = name
+        if not name:
+            raise serializers.ValidationError({'name': 'Name is required.'})
+        board_id = self.instance.board_id if self.instance else self.context['board'].pk
+        qs = Tag.objects.filter(board_id=board_id, name=name)
+        if self.instance:
+            qs = qs.exclude(pk=self.instance.pk)
+        if qs.exists():
+            raise serializers.ValidationError(
+                {'name': 'A tag with this name already exists in this board.'})
+        return attrs
+
 
 class TaskSerializer(serializers.ModelSerializer):
     assignees = serializers.SerializerMethodField()
@@ -76,8 +90,17 @@ class ColumnWriteSerializer(serializers.ModelSerializer):
         read_only_fields = ['id', 'board']
 
     def validate(self, attrs):
-        if len(attrs.get('name', '').strip()) == 0:
+        name = attrs.get('name', '').strip()
+        attrs['name'] = name
+        if not name:
             raise serializers.ValidationError({'name': 'Name is required.'})
+        board_id = self.instance.board_id if self.instance else self.context['board'].pk
+        qs = Column.objects.filter(board_id=board_id, name=name)
+        if self.instance:
+            qs = qs.exclude(pk=self.instance.pk)
+        if qs.exists():
+            raise serializers.ValidationError(
+                {'name': 'A column with this name already exists in this board.'})
         return attrs
 
 

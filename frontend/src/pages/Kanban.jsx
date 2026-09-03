@@ -127,8 +127,8 @@ export default function Kanban() {
       setNewColumnName('')
       setAddingColumn(false)
       loadBoard()
-    } catch {
-      setError('Failed to create column')
+    } catch (err) {
+      setError(err?.response?.data?.name?.[0] || 'Failed to create column')
     }
   }
 

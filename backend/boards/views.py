@@ -1,5 +1,6 @@
 import math
 
+from django.db import IntegrityError
 from django.db.models import Q
 from django.shortcuts import get_object_or_404
 from rest_framework import generics, status
@@ -91,9 +92,13 @@ class BoardColumnListCreateView(generics.ListCreateAPIView):
         self.check_object_permissions(request, board)
         data = dict(request.data)
         data['board'] = str(board.id)
-        serializer = ColumnWriteSerializer(data=data)
+        serializer = ColumnWriteSerializer(data=data, context={'board': board})
         serializer.is_valid(raise_exception=True)
-        column = serializer.save(board=board, position=_next_position(board.columns.all()))
+        try:
+            column = serializer.save(board=board, position=_next_position(board.columns.all()))
+        except IntegrityError:
+            return Response({'name': ['A column with this name already exists in this board.']},
+                            status=status.HTTP_400_BAD_REQUEST)
         return Response(ColumnSerializer(column).data, status=status.HTTP_201_CREATED)
 
 
@@ -207,9 +212,13 @@ class BoardTagListCreateView(generics.ListCreateAPIView):
     def post(self, request, *args, **kwargs):
         board = self.get_board()
         self.check_object_permissions(request, board)
-        serializer = TagSerializer(data=request.data)
+        serializer = TagSerializer(data=request.data, context={'board': board})
         serializer.is_valid(raise_exception=True)
-        tag = serializer.save(board=board)
+        try:
+            tag = serializer.save(board=board)
+        except IntegrityError:
+            return Response({'name': ['A tag with this name already exists in this board.']},
+                            status=status.HTTP_400_BAD_REQUEST)
         return Response(TagSerializer(tag).data, status=status.HTTP_201_CREATED)
 
 
