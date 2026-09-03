@@ -49,7 +49,10 @@ export default function Kanban() {
   const loadBoard = useCallback(() => {
     return api
       .get(`/boards/${boardId}`)
-      .then((res) => setBoard(res.data))
+      .then((res) => {
+        setBoard(res.data)
+        setError('')
+      })
       .catch(() => setError('Failed to load board'))
   }, [boardId])
 
@@ -296,7 +299,10 @@ export default function Kanban() {
               <form onSubmit={addColumn}>
                 <input
                   value={newColumnName}
-                  onChange={(e) => setNewColumnName(e.target.value)}
+                  onChange={(e) => {
+                    setNewColumnName(e.target.value)
+                    if (error) setError('')
+                  }}
                   placeholder="Column name"
                   autoFocus
                 />
@@ -312,6 +318,7 @@ export default function Kanban() {
                     Cancel
                   </button>
                 </div>
+                {error && <p className="auth-error">{error}</p>}
               </form>
             ) : (
               <button
