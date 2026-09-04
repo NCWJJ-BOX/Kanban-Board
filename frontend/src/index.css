@@ -782,6 +782,24 @@ textarea {
   margin-top: 0.15rem;
 }
 
+.bell-board {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--accent);
+  margin-top: 0.1rem;
+}
+
+.bell-actions {
+  display: flex;
+  gap: 0.4rem;
+  margin-top: 0.4rem;
+}
+
+.btn-sm {
+  padding: 0.2rem 0.6rem;
+  font-size: 0.75rem;
+}
+
 .bell-empty {
   color: var(--muted);
   text-align: center;

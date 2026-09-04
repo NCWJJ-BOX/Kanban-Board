@@ -337,7 +337,10 @@ class BoardInviteView(APIView):
                 not BoardMember.objects.filter(board=board, user=user).exists():
             Notification.objects.get_or_create(
                 user=user, type=Notification.Type.SYSTEM,
-                defaults={'message': f'คุณได้รับคำเชิญเข้าร่วมบอร์ด "{board.name}"'},
+                defaults={
+                    'message': f'คุณได้รับคำเชิญเข้าร่วมบอร์ด "{board.name}"',
+                    'invitation': existing,
+                },
             )
         return Response(InvitationSerializer(existing).data, status=status.HTTP_201_CREATED)
 
@@ -435,3 +438,22 @@ class BoardMemberRemoveView(APIView):
                             status=status.HTTP_400_BAD_REQUEST)
         BoardMember.objects.filter(board=board, user_id=user_id).delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+class InvitationRejectView(APIView):
+    """POST /invitations/{id}/reject — the invited account declines the invitation."""
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, pk):
+        invitation = get_object_or_404(
+            Invitation.objects.select_related('board'), pk=pk)
+        if invitation.email.lower() != request.user.email.lower():
+            return Response({'error': 'This invitation is not for you.'},
+                            status=status.HTTP_403_FORBIDDEN)
+        if invitation.status != Invitation.Status.PENDING:
+            return Response({'error': 'Invitation is no longer pending.'},
+                            status=status.HTTP_400_BAD_REQUEST)
+        invitation.status = Invitation.Status.DECLINED
+        invitation.save(update_fields=['status'])
+        return Response({
+            'message': 'Invitation declined',
+        }, status=status.HTTP_200_OK)

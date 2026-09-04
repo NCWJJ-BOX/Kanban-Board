@@ -2,7 +2,7 @@ from django.urls import path
 from boards.views import (
     BoardColumnListCreateView, BoardDetailView, BoardInviteView, BoardListCreateView,
     BoardMemberRemoveView, BoardMembersView, BoardTagListCreateView,
-    ColumnDetailView, ColumnTaskListCreateView, InvitationAcceptView, InvitationListView,
+    ColumnDetailView, ColumnTaskListCreateView, InvitationAcceptView, InvitationListView, InvitationRejectView, InvitationRejectView,
     NotificationListView, NotificationReadView, TaskAssigneeChangeView, TaskAssigneeRemoveView,
     TaskDetailView, TaskMoveView, TaskTagChangeView, TaskTagRemoveView,
 )
@@ -32,6 +32,7 @@ urlpatterns = [
     # Invitations
     path('invitations/mine', InvitationListView.as_view(), name='invitation-list'),
     path('invitations/<uuid:pk>/accept', InvitationAcceptView.as_view(), name='invitation-accept'),
+    path('invitations/<uuid:pk>/reject', InvitationRejectView.as_view(), name='invitation-reject'),
 
     # Notifications
     path('notifications', NotificationListView.as_view(), name='notification-list'),
