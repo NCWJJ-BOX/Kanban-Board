@@ -24,7 +24,14 @@ export default function Register() {
       navigate('/boards')
     } catch (err) {
       const detail = err.response?.data?.detail
-      const msg = Array.isArray(detail) ? detail.map((d) => d.msg || d).join(', ') : detail
+      let msg
+      if (Array.isArray(detail)) {
+        msg = detail.map((d) => d.msg || d).join(', ')
+      } else if (detail && typeof detail === 'object') {
+        msg = Object.values(detail).flat().map((d) => d.msg || d).join(', ')
+      } else {
+        msg = detail
+      }
       setError(msg || err.response?.data?.message || 'Registration failed')
     } finally {
       setBusy(false)

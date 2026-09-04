@@ -28,6 +28,7 @@ services:
       DB_PASSWORD: ${POSTGRES_PASSWORD:-kanban}
       DB_HOST: db
       DB_PORT: '5432'
+      DEBUG: "0"
     ports:
       - "8000:8000"
     volumes:
