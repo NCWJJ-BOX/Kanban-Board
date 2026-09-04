@@ -16,14 +16,19 @@ export default function NotificationBell() {
     return () => document.removeEventListener('mousedown', onClickOutside)
   }, [open])
 
-  async function handleInvitation(inviteId, action) {
+  async function handleInvitation(notifId, inviteId, action) {
     setActing(inviteId)
     try {
       await api.post(`/invitations/${inviteId}/${action}`)
-      // Remove from list or mark as read
-      markRead(inviteId)
+      // Mark notification as read after accept/reject
+      await markRead(notifId)
     } catch (err) {
-      console.error(`Failed to ${action} invitation`, err)
+      // If invitation already processed (400), still mark as read
+      if (err.response?.status === 400) {
+        await markRead(notifId)
+      } else {
+        console.error(`Failed to ${action} invitation`, err)
+      }
     } finally {
       setActing(null)
     }
@@ -64,14 +69,14 @@ export default function NotificationBell() {
                   <div className="bell-board">{n.board_name}</div>
                 )}
                 <div className="bell-time">{new Date(n.created_at).toLocaleString()}</div>
-                {n.invitation_id && !n.is_read && (
+                {n.invitation_id && n.invitation_status === 'pending' && (
                   <div className="bell-actions">
                     <button
                       className="btn btn-primary btn-sm"
                       disabled={acting === n.invitation_id}
                       onClick={(e) => {
                         e.stopPropagation()
-                        handleInvitation(n.invitation_id, 'accept')
+                        handleInvitation(n.id, n.invitation_id, 'accept')
                       }}
                     >
                       {acting === n.invitation_id ? '...' : 'Accept'}
@@ -81,11 +86,16 @@ export default function NotificationBell() {
                       disabled={acting === n.invitation_id}
                       onClick={(e) => {
                         e.stopPropagation()
-                        handleInvitation(n.invitation_id, 'reject')
+                        handleInvitation(n.id, n.invitation_id, 'reject')
                       }}
                     >
                       Reject
                     </button>
+                  </div>
+                )}
+                {n.invitation_id && n.invitation_status !== 'pending' && (
+                  <div className="bell-status">
+                    {n.invitation_status === 'accepted' ? '✓ Joined' : '✗ Declined'}
                   </div>
                 )}
               </li>
