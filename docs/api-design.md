@@ -691,12 +691,45 @@ GET /notifications?unread=1
 }
 ```
 
-### Frontend Notification Flow
+### WebSocket Real-time Notification
 
-Frontend ใช้ Polling เพื่อตรวจสอบ Notification ใหม่ทุก **5 วินาที**
+ระบบใช้ **Django Channels** เพื่อ Push Notification ใหม่ให้ Frontend แบบ Real-time แทนการ Polling
 
-* `useNotifications.js`
-* Optimistic `markRead`
-* Optimistic `markAllRead`
-* แสดงจำนวน Unread ผ่าน Notification Badge
-* แสดงสถานะผ่าน Notification Bell
+**Endpoint**
+
+```text
+WS /ws/notifications/?token=<access_token>
+```
+
+* **Auth:** ส่ง Access Token ผ่าน Query Parameter `token` (Browser WebSocket API ไม่สามารถตั้ง HTTP Header ได้)
+* **Transport:** WebSocket ผ่าน Vite Proxy (`/ws` ด้วย `ws: true`) ทั้งในโหมด Dev และ Preview
+
+**Inbound Message**
+
+เมื่อมี Notification ใหม่ Backend จะ Push ข้อมูลในรูปแบบเดียวกับ REST Response (ผ่าน `NotificationSerializer`) — ไม่มี Event Name Wrapper เนื่องจากเป็น AsyncJSONWebsocketConsumer ที่ส่ง JSON โดยตรง:
+
+```json
+{
+  "id": "uuid",
+  "type": "assignment",
+  "message": "คุณถูกมอบหมายงาน \"ออกแบบ ER Diagram\" ในบอร์ด \"Process Dev\"",
+  "task": "uuid-or-null",
+  "task_title": "ออกแบบ ER Diagram",
+  "is_read": false,
+  "created_at": "..."
+}
+```
+
+**Close Codes**
+
+| Code  | ความหมาย                               |
+| ----- | -------------------------------------- |
+| `4001` | Authentication ล้มเหลว (Token ไม่ถูกต้องหรือไม่มี Token) |
+
+**Frontend Flow**
+
+* `useNotifications.js` — โหลดรายการเดิมผ่าน `GET /notifications` ครั้งแรก จากนั้นเปิด WebSocket และ Prepend Notification ใหม่ที่ Push เข้ามา (Deduplicate ด้วย `id`, จำกัด 50 รายการ)
+* Reconnect อัตโนมัติทุก ~3 วินาทีเมื่อ Connection หลุด โดยอ่าน Access Token ใหม่จาก `localStorage` ทุกครั้ง
+* หยุด Reconnect และปิด WebSocket ทันทีเมื่อมี Event `kanban:logout`
+* Optimistic `markRead` / `markAllRead` ผ่าน `PATCH /notifications/{id}/read`
+* แสดงจำนวน Unread ผ่าน Notification Badge และรายการผ่าน Notification Bell

@@ -34,7 +34,7 @@ Kanban Board เป็น **Full-Stack Web Application แบบ Monolithic Arch
 └─────────────────────────────────────────────┘
 ```
 
-Redis ถูกใช้งานเป็น Cache สำหรับ Board Detail และ Rate Limiting แต่ยังไม่มี Message Queue หรือ Background Worker สำหรับงานแบบ Asynchronous
+Redis ถูกใช้งานเป็น Cache สำหรับ Board Detail, Rate Limiting และ Channel Layer ของ Django Channels สำหรับ Push Notification แบบ Real-time (ผ่าน WebSocket) แต่ยังไม่มี Message Queue หรือ Background Worker สำหรับงานแบบ Asynchronous
 
 ดังนั้น Architecture ปัจจุบันจึงเป็น **Monolith ที่แยก Frontend และ Backend เป็น Containers** แต่ยังคงเป็น Application เดียวในระดับระบบ
 
@@ -47,6 +47,8 @@ Redis ถูกใช้งานเป็น Cache สำหรับ Board Det
 | Layer            | Technology                    | รายละเอียด                   |
 | ---------------- | ----------------------------- | ---------------------------- |
 | Backend          | Python 3.12 + Django 5+ + DRF | REST API และ Business Logic  |
+| Real-time        | Django Channels + channels-redis | WebSocket Push Notification ผ่าน Redis Channel Layer (fallback เป็น InMemoryChannelLayer เมื่อไม่มี `REDIS_URL`) |
+| ASGI Server      | Uvicorn                       | Serve ASGI Application (`config.asgi:application`) |
 | Authentication   | SimpleJWT                     | JWT Access / Refresh Token   |
 | Database         | PostgreSQL 16                 | Relational Database          |
 | Cache            | Redis 7 + django-redis        | Cache Board Detail และ Rate Limiting โดย fallback ไปใช้ LocMemCache เมื่อไม่มี `REDIS_URL` |
@@ -283,7 +285,7 @@ Update เพียง 1 Row
 
 # 5. Notification Architecture
 
-ระบบ Notification ปัจจุบันใช้ **Polling** แทน WebSocket หรือ Push Notification
+ระบบ Notification ใช้ **Real-time Push ผ่าน WebSocket (Django Channels)** แทนการ Polling
 
 Notification ถูกสร้างจาก 2 Flow หลัก:
 
@@ -308,29 +310,48 @@ Create Notification
 (type = system)
 ```
 
-Frontend ใช้ `useNotifications.js` Polling ทุก **5 วินาที**:
+### WebSocket Push Flow
+
+เมื่อสร้าง Notification (`post_save` ของ Model `Notification`) Signal `_notification_created` ใน `boards/signals.py` จะ Push ข้อมูล Notification ไปยัง Group:
 
 ```text
-Frontend
-   │
-   │ GET /notifications
-   ▼
+notifications_{user_id}
+```
+
+ผ่าน `channel_layer.group_send(...)` ซึ่งใช้ Redis Channel Layer เป็น Backend (หรือ InMemoryChannelLayer เมื่อไม่มี `REDIS_URL`)
+
+Frontend `useNotifications.js` เปิด WebSocket:
+
+```text
+/ws/notifications/?token=<access_token>
+```
+
+```text
 Backend
    │
-   │ latest 50 records
+   │ WebSocket /ws/notifications/?token=...
+   ▼
+NotificationConsumer
+   │
+   ├── Authenticate ด้วย JWT Access Token (query param)
+   ├── เข้าร่วม Group notifications_{user_id}
+   ▼
+เมื่อมี Notification ใหม่
+   │
+   │ group_send → notification.new
    ▼
 Frontend
    │
-   └── Update Notification Badge
+   └── Prepend Notification ใหม่ + Update Badge
 ```
 
-Backend จำกัดจำนวน Notification ที่ส่งกลับ:
+รายละเอียด:
 
-```python
-qs[:50]
-```
-
-ทำให้ Payload มีขนาดจำกัดและไม่เพิ่มขึ้นอย่างไม่มีที่สิ้นสุด
+* **Auth ผ่าน Query Parameter** — Browser WebSocket API ไม่สามารถตั้ง HTTP Header ได้ จึงส่ง Access Token เป็น `?token=<access_token>` แล้ว Consumer ตรวจสอบด้วย SimpleJWT `AccessToken`; หาก Token ไม่ถูกต้องจะปิด Connection ด้วย Close Code `4001`
+* **Initial Load** — เมื่อ Hook Mount ครั้งแรกยังคงโหลดรายการเดิมผ่าน `GET /notifications` จากนั้นรายการใหม่จะเข้ามาทาง WebSocket
+* **Reconnect + Backoff** — หาก Connection หลุด Hook จะ Reconnect อัตโนมัติทุก ~3 วินาที และอ่าน Token ใหม่จาก `localStorage` ทุกครั้ง (รองรับกรณี Access Token ถูก Refresh แล้ว)
+* **Deduplicate & Limit** — Notification ใหม่จะถูก prepend พร้อม Deduplicate ด้วย `id` และจำกัดไว้ที่ 50 รายการล่าสุด
+* **Logout** — เมื่อมี Event `kanban:logout` จะหยุด Reconnect และปิด WebSocket ทันที
 
 การ Mark as Read ใช้ **Optimistic Update**:
 
@@ -343,6 +364,8 @@ Update UI immediately
         ▼
 PATCH /notifications/{id}/read
 ```
+
+Backend ใช้ `NotificationSerializer` ในการกำหนด Payload ของทั้ง REST และ WebSocket Message เพื่อให้ Frontend จัดการข้อมูลรูปแบบเดียวกัน
 
 ---
 
@@ -554,6 +577,19 @@ Anonymous User จำกัดที่ **60 Request/นาที** และ Au
 
 ---
 
+### 7.9 Real-time Notification Push
+
+แทนที่ Frontend จะ Poll `GET /notifications` ทุก 5 วินาที ระบบใช้ WebSocket (Django Channels + Redis Channel Layer) เพื่อ Push เฉพาะตอนที่มี Notification ใหม่เท่านั้น
+
+```text
+เดิม: Poll ทุก 5 วินาที → Request 12 ครั้ง/นาที (ส่วนใหญ่ได้ข้อมูลซ้ำ)
+ใหม่: Push เมื่อมี Notification ใหม่เท่านั้น
+```
+
+ช่วยลด Request ที่ไม่จำเป็นและทำให้ UI อัปเดตได้ทันที อย่างไรก็ตาม WebSocket 1 Connection ต่อ User ยังคงต้องเปิดค้างไว้ตลอดเวลา ซึ่งมีค่า Overhead ของการรักษา Connection (เหมาะกับ Long-lived Session มากกว่างานที่ต้อง Reconnect บ่อย)
+
+---
+
 # 8. Current Limitations
 
 ส่วนนี้ระบุข้อจำกัดของ Implementation ปัจจุบันตาม Code จริง เพื่อไม่ให้ Architecture Documentation แสดงความสามารถเกินกว่าที่ระบบมีอยู่
@@ -606,33 +642,30 @@ task_count
 
 ---
 
-### 8.4 ยังไม่มี Real-Time Transport และ Background Worker
+### 8.4 ยังไม่มี Background Worker สำหรับงาน Asynchronous
 
-ระบบมี Redis แล้วในฐานะ Cache และ Rate Limiting แต่ยังไม่มี:
+ระบบมี Redis แล้วในฐานะ Cache, Rate Limiting และ Channel Layer สำหรับ WebSocket แต่ยังไม่มี:
 
 ```text
-WebSocket
 Message Queue
 Background Worker
 ```
 
-Notification จึงใช้ Polling ทุก 5 วินาที และการสร้าง Notification เกิดขึ้นภายใน Request เดียวกับ Operation หลัก
+การสร้าง Notification เกิดขึ้นภายใน Request เดียวกับ Operation หลัก (เช่น การ Assign Task) และการส่ง WebSocket Push เป็นแบบ Fire-and-Forget จาก Signal
 
 นอกจากนี้การ Cache Board Detail ยังต้องตรวจสอบ Permission ผ่านการ Query ฐานข้อมูลทุกครั้งก่อนอ่าน Cache และการ Invalidate ผ่าน Signals ก็ยังเกิดขึ้นแบบ Synchronous ภายใน Request เดียวกัน ซึ่งในกรณีที่ต้องรองรับ Load สูงมาก ควรพิจารณาใช้ Message Queue / Background Worker ขับเคลื่อนงานเหล่านี้
 
 ---
 
-### 8.5 Backend ยังใช้ Development Server
+### 8.5 แม้ใช้ ASGI Server แต่ยังเป็น Development Configuration
 
-ปัจจุบัน Backend รันผ่าน:
+ปัจจุบัน Backend รันผ่าน **Uvicorn** (ASGI Server) เพื่อรองรับ WebSocket:
 
 ```text
-manage.py runserver
+uvicorn config.asgi:application --host 0.0.0.0 --port 8000 --reload
 ```
 
-จึงยังไม่ใช่ Production WSGI/ASGI Server เช่น Gunicorn หรือ Uvicorn
-
-นอกจากนี้ยังไม่ได้ตั้งค่า:
+แต่ยังคงเปิดโหมด `--reload` ซึ่งเหมาะสำหรับ Development มากกว่า Production ไม่ได้ตั้งค่า:
 
 ```text
 Database Connection Pooling
@@ -680,9 +713,10 @@ ALLOWED_HOSTS=*
 │ • Database Constraints               │
 │ • Redis Cache (Board Detail)         │
 │ • API Rate Limiting                  │
+│ • Real-time Notification (WebSocket) │
 └──────────────────────────────────────┘
 ```
 
-ขณะเดียวกัน ระบบยังมีข้อจำกัดที่ระบุได้จาก Implementation ปัจจุบัน ได้แก่ Nested N+1 ใน Board Detail, Count Query เพิ่มเติม, การไม่มี Pagination สำหรับ Resource หลัก, การใช้ Polling แทน Real-time Communication และการใช้ Django Development Server รวมถึงงาน Invalidate Cache และสร้าง Notification ที่ยังเป็นแบบ Synchronous ภายใน Request
+ขณะเดียวกัน ระบบยังมีข้อจำกัดที่ระบุได้จาก Implementation ปัจจุบัน ได้แก่ Nested N+1 ใน Board Detail, Count Query เพิ่มเติม, การไม่มี Pagination สำหรับ Resource หลัก และงาน Invalidate Cache และสร้าง Notification ที่ยังเป็นแบบ Synchronous ภายใน Request รวมถึง ASGI Server ที่ยังรันในโหมด Development (`--reload`)
 
 
