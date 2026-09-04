@@ -87,6 +87,10 @@ class BoardColumnListCreateView(generics.ListCreateAPIView):
     def get_queryset(self):
         return self.get_board().columns.all()
 
+    def list(self, request, *args, **kwargs):
+        self.check_object_permissions(request, self.get_board())
+        return super().list(request, *args, **kwargs)
+
     def post(self, request, *args, **kwargs):
         board = self.get_board()
         self.check_object_permissions(request, board)
@@ -126,9 +130,18 @@ class ColumnTaskListCreateView(generics.ListCreateAPIView):
     def get_column(self):
         return get_object_or_404(Column.objects.select_related('board'), pk=self.kwargs['column_id'])
 
+    def get_permissions(self):
+        if self.request.method == 'GET':
+            return [IsAuthenticated(), HasBoardAccess()]
+        return [IsAuthenticated(), CanEditBoard()]
+
     def get_queryset(self):
         return self.get_column().tasks.select_related('column').prefetch_related(
             'assignees__user', 'tag_links__tag')
+
+    def list(self, request, *args, **kwargs):
+        self.check_object_permissions(request, self.get_column())
+        return super().list(request, *args, **kwargs)
 
     def post(self, request, *args, **kwargs):
         column = self.get_column()
@@ -203,11 +216,20 @@ class BoardTagListCreateView(generics.ListCreateAPIView):
     permission_classes = [IsAuthenticated]
     serializer_class = TagSerializer
 
+    def get_permissions(self):
+        if self.request.method == 'GET':
+            return [IsAuthenticated(), HasBoardAccess()]
+        return [IsAuthenticated(), CanEditBoard()]
+
     def get_board(self):
         return get_object_or_404(Board, pk=self.kwargs['board_id'])
 
     def get_queryset(self):
         return self.get_board().tags.all()
+
+    def list(self, request, *args, **kwargs):
+        self.check_object_permissions(request, self.get_board())
+        return super().list(request, *args, **kwargs)
 
     def post(self, request, *args, **kwargs):
         board = self.get_board()
