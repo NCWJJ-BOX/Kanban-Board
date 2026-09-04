@@ -74,14 +74,26 @@ services:
     restart: unless-stopped
     environment:
       VITE_PROXY_TARGET: http://backend:8000
-    ports:
-      - "5174:5173"
+    expose:
+      - "5173"
     volumes:
       - ./frontend:/app
       - /app/node_modules
     depends_on:
       - backend
     command: npm run preview -- --host 0.0.0.0 --port 5173 --strictPort
+
+  nginx:
+    image: nginx:alpine
+    container_name: kanban_nginx
+    restart: unless-stopped
+    ports:
+      - "5174:80"
+    volumes:
+      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - frontend
+      - backend
 
 volumes:
   pgdata:

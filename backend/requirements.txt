@@ -5,6 +5,6 @@ django-cors-headers
 django-redis
 channels
 channels-redis
-uvicorn
+uvicorn[standard]
 psycopg[binary]
 python-dotenv
