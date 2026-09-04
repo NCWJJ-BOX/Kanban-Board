@@ -215,28 +215,8 @@ npm run preview
 หากมีการแก้ไข Frontend ให้ Build ใหม่ด้วย:
 
 ```bash
-docker compose exec frontend npm run build
-docker compose restart frontend
+docker compose up -d
 ```
 
-### Backend Live Reload
 
-โฟลเดอร์:
 
-```text
-./backend
-```
-
-ถูก Bind Mount เข้าไปใน Backend Container ทำให้เมื่อแก้ไข Python/Django Source Code ระบบสามารถ Reload ผ่าน Django `runserver` ได้โดยไม่ต้อง Build Docker Image ใหม่ทุกครั้ง
-
-### การเข้าสู่ระบบครั้งแรก
-
-Endpoint ที่ต้อง Authentication จะตอบกลับ `401 Unauthorized` หาก Request ยังไม่มี JWT Token
-
-ให้เข้าสู่ระบบผ่าน:
-
-```text
-POST /api/v1/auth/login
-```
-
-เพื่อรับ Access Token จากนั้นนำ Token ไปใช้กับ API ที่ต้อง Authentication
