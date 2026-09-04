@@ -2,5 +2,6 @@ Django>=5.0
 djangorestframework
 djangorestframework-simplejwt
 django-cors-headers
+django-redis
 psycopg[binary]
 python-dotenv

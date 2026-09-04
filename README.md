@@ -20,6 +20,7 @@
 | **Backend**         | **Python 3, Django 6, Django REST Framework, SimpleJWT, django-cors-headers**           |
 | Frontend            | React 19, Vite 8, @dnd-kit (core/sortable/utilities), react-router-dom 7, Axios, Oxlint |
 | Database            | PostgreSQL 16                                                                           |
+| **Cache**           | **Redis 7 + django-redis (Cache & Rate Limiting)**                                      |
 | Containerization    | Docker, Docker Compose                                                                  |
 | Database Management | pgAdmin 4                                                                               |
 
@@ -35,6 +36,8 @@ Backend พัฒนาด้วย **Python 3 และ Django REST Framework**
 * `serializers.py` — Validation และการแปลงข้อมูลระหว่าง JSON กับ Django Models
 * `views.py` — จัดการ HTTP Request/Response และ Business Logic
 * `permissions.py` — ตรวจสอบสิทธิ์ตาม Membership และ Role ของ Board
+* `cache.py` — Per-user Cache Helper สำหรับ Board Detail (ผ่าน Redis / LocMem)
+* `signals.py` — Invalidate Cache อัตโนมัติเมื่อข้อมูล Board ถูกแก้ไข
 * `urls.py` — กำหนด Routing ของ REST API
 
 ### Backend Flow
@@ -57,6 +60,13 @@ Django ORM
 PostgreSQL 16
 ```
 
+### Redis Integration (Cache & Rate Limiting)
+
+* Redis 7 ทำหน้าที่เป็น Cache Backend ผ่าน `django-redis` เมื่อกำหนด `REDIS_URL`
+* หากไม่ได้ตั้ง `REDIS_URL` ระบบจะ fallback ไปใช้ `LocMemCache` อัตโนมัติ เพื่อให้ local development ที่ไม่มี Redis ยังใช้งานได้
+* `GET /api/v1/boards/{board_id}` (Board Detail) ถูก Cache แบบ per-user เป็นเวลา 5 นาที และจะถูก invalidate อัตโนมัติผ่าน Django Signals เมื่อมีการแก้ไข Board, Column, Task, Tag หรือ Member
+* API Rate Limiting ใช้ Redis เป็นตัวนับ: Anonymous `60 req/min`, Authenticated `120 req/min`
+
 ## โครงสร้างโปรเจกต์
 
 ```text
@@ -73,6 +83,8 @@ Kanban-Board/
 │   │   ├── serializers.py       # Validation / Serialization
 │   │   ├── views.py             # REST API Views
 │   │   ├── permissions.py       # Board Access Control
+│   │   ├── cache.py             # Board Detail Cache Helpers
+│   │   ├── signals.py           # Cache Invalidation Signals
 │   │   └── urls.py              # API Routes
 │   │
 │   ├── manage.py
@@ -93,9 +105,10 @@ Kanban-Board/
 
 ## Architecture / Services
 
-ระบบประกอบด้วย 4 Services ที่จัดการผ่าน Docker Compose:
+ระบบประกอบด้วย 5 Services ที่จัดการผ่าน Docker Compose:
 
 * **db** — PostgreSQL 16 สำหรับจัดเก็บข้อมูล เปิดใช้งาน Port `5432` บน Host ใช้ Named Volume `pgdata` และมี Health Check ผ่าน `pg_isready`
+* **redis** — Redis 7 สำหรับ Cache และ Rate Limiting เปิดใช้งาน Port `6379` บน Host ใช้ Named Volume `redisdata` และมี Health Check ผ่าน `redis-cli ping`
 * **backend** — Python + Django REST Framework API เปิดใช้งาน Port `8000` และ Mount โฟลเดอร์ `./backend` แบบ Bind Mount เพื่อรองรับการแก้ไข Backend Code ระหว่างการพัฒนา
 * **pgAdmin** — Web UI สำหรับจัดการ PostgreSQL เปิดใช้งาน Port `5050`
 * **frontend** — React Application ที่ Build เป็น Production Bundle และให้บริการผ่าน Vite Preview Server โดยเปิด Port `5174` บน Host และ Port `5173` ภายใน Container
@@ -118,13 +131,14 @@ docker compose up --build
 
 สามารถกำหนดค่า Environment Variables ผ่านไฟล์ `.env` หรือ Shell Environment ได้
 
-| Variable            | Default            |
-| ------------------- | ------------------ |
-| `POSTGRES_DB`       | `kanban`           |
-| `POSTGRES_USER`     | `kanban`           |
-| `POSTGRES_PASSWORD` | `kanban`           |
-| `PGADMIN_EMAIL`     | `admin@kanban.dev` |
-| `PGADMIN_PASSWORD`  | `admin`            |
+| Variable            | Default                   |
+| ------------------- | ------------------------- |
+| `POSTGRES_DB`       | `kanban`                  |
+| `POSTGRES_USER`     | `kanban`                  |
+| `POSTGRES_PASSWORD` | `kanban`                  |
+| `PGADMIN_EMAIL`     | `admin@kanban.dev`        |
+| `PGADMIN_PASSWORD`  | `admin`                   |
+| `REDIS_URL`         | `redis://localhost:6379/1` |
 
 ### สร้าง Django Superuser
 
@@ -145,6 +159,7 @@ docker compose exec backend python manage.py createsuperuser
 | Backend      | `http://localhost:8000`        |
 | Django Admin | `http://localhost:8000/admin/` |
 | pgAdmin      | `http://localhost:5050`        |
+| Redis        | `localhost:6379`               |
 
 ## API
 

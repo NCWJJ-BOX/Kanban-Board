@@ -9,6 +9,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from accounts.models import User
+from boards.cache import bump_board, get_board_detail, set_board_detail
 from boards.models import (
     Board, BoardMember, Column, Role, Tag, Task, TaskAssignee, TaskTag, Invitation, Notification,
 )
@@ -66,6 +67,19 @@ class BoardDetailView(generics.RetrieveUpdateDestroyAPIView):
         if self.request.method == 'GET':
             return [IsAuthenticated(), HasBoardAccess()]
         return super().get_permissions()
+
+    def retrieve(self, request, *args, **kwargs):
+        # Board detail is the heaviest query in the app (all columns/tasks/tags/members).
+        # Permission is still checked via self.get_object() before reading the cache,
+        # and the payload is cached per-user (the role field is requester-dependent).
+        board_id = str(self.kwargs['board_id'])
+        cached = get_board_detail(board_id, str(request.user.id))
+        if cached is not None:
+            return Response(cached)
+        board = self.get_object()
+        data = BoardDetailSerializer(board, context=self.get_serializer_context()).data
+        set_board_detail(board_id, str(request.user.id), data)
+        return Response(data)
 
     def perform_destroy(self, instance):
         instance.soft_delete()
