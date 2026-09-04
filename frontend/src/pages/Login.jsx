@@ -5,8 +5,9 @@ import { useAuth } from '../auth'
 export default function Login() {
   const { login } = useAuth()
   const navigate = useNavigate()
-  const [email, setEmail] = useState('')
-  const [password, setPassword] = useState('')
+  // Demo prefill: test@gmail.com / password123 — login is one click on the demo site.
+  const [email, setEmail] = useState('test@gmail.com')
+  const [password, setPassword] = useState('password123')
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
 
