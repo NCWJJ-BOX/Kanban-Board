@@ -43,7 +43,8 @@ class CanEditBoard(BasePermission):
         role = get_user_role_on_board(request.user, board)
         if role == Role.OWNER:
             return True
-        if request.method in ('PATCH', 'DELETE') and isinstance(board, Board):
+        # Only restrict PATCH/DELETE on the Board itself (not tasks/columns)
+        if request.method in ('PATCH', 'DELETE') and isinstance(obj, Board):
             return False
         return role == Role.EDITOR
 
