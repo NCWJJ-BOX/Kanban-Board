@@ -106,6 +106,8 @@ Kanban-Board/
 │       ├── hooks/               # Custom Hooks
 │       └── pages/               # Application Pages
 │
+├── nginx/                       # Nginx Reverse Proxy (HTTP + WebSocket)
+│   └── default.conf             # Proxy config: /ws/ → backend, /* → frontend
 ├── docs/                        # API Design, ER Diagram และ Performance
 ├── docker-compose.yml           # Docker Services
 └── README.md
@@ -113,18 +115,23 @@ Kanban-Board/
 
 ## Architecture / Services
 
-ระบบประกอบด้วย 5 Services ที่จัดการผ่าน Docker Compose:
+ระบบประกอบด้วย 6 Services ที่จัดการผ่าน Docker Compose:
 
 * **db** — PostgreSQL 16 สำหรับจัดเก็บข้อมูล เปิดใช้งาน Port `5432` บน Host ใช้ Named Volume `pgdata` และมี Health Check ผ่าน `pg_isready`
 * **redis** — Redis 7 สำหรับ Cache และ Rate Limiting เปิดใช้งาน Port `6379` บน Host ใช้ Named Volume `redisdata` และมี Health Check ผ่าน `redis-cli ping`
-* **backend** — Python + Django REST Framework API รองรับทั้ง HTTP และ WebSocket ผ่าน ASGI Server (**Uvicorn** ใช้ `config.asgi:application`) เปิดใช้งาน Port `8000` และ Mount โฟลเดอร์ `./backend` แบบ Bind Mount เพื่อรองรับการแก้ไข Backend Code ระหว่างการพัฒนา
+* **backend** — Python + Django REST Framework API รองรับทั้ง HTTP และ WebSocket ผ่าน ASGI Server (**Uvicorn[standard]** ใช้ `config.asgi:application`) เปิดใช้งาน Port `8000` และ Mount โฟลเดอร์ `./backend` แบบ Bind Mount เพื่อรองรับการแก้ไข Backend Code ระหว่างการพัฒนา
 * **pgAdmin** — Web UI สำหรับจัดการ PostgreSQL เปิดใช้งาน Port `5050`
-* **frontend** — React Application ที่ Build เป็น Production Bundle และให้บริการผ่าน Vite Preview Server โดยเปิด Port `5174` บน Host และ Port `5173` ภายใน Container
-
-Frontend ติดต่อ Backend ผ่าน Docker Network โดยใช้:
+* **frontend** — React Application ที่ Build เป็น Production Bundle และให้บริการผ่าน Vite Preview Server โดย expose Port `5173` ภายใน Container (ไม่เปิดบน Host โดยตรง)
+* **nginx** — Reverse Proxy ที่รับ traffic ทั้งหมดจาก Port `5174` แล้วแบ่ง:
+  - `/ws/*` → backend:8000 (WebSocket proxy พร้อม Upgrade headers)
+  - `/api/*`, `/admin/*` → backend:8000 (HTTP proxy)
+  - `/*` → frontend:5173 (static files)
 
 ```text
-http://backend:8000
+Client → Cloudflare Tunnel → nginx:5174
+  ├── /ws/*    → backend:8000 (WebSocket)
+  ├── /api/*   → backend:8000 (HTTP)
+  └── /*       → frontend:5173 (static)
 ```
 
 ## การติดตั้งและเริ่มต้นใช้งาน
@@ -221,31 +228,55 @@ Authorization: Bearer <token>
 
 * `GET /api/v1/invitations/mine` — ดึงคำเชิญที่รอดำเนินการของผู้ใช้
 * `POST /api/v1/invitations/{id}/accept` — ยอมรับคำเชิญ
-* `GET /api/v1/notifications` — ดึงรายการ Notification
+* `POST /api/v1/invitations/{id}/reject` — ปฏิเสธคำเชิญ
+* `GET /api/v1/notifications` — ดึงรายการ Notification (พร้อม `invitation_id`, `invitation_status`, `board_name` สำหรับ invitation notifications)
 * `POST /api/v1/notifications/{notification_id}/read` — เปลี่ยน Notification เป็นอ่านแล้ว
+
+#### Invitation Flow
+
+1. Owner เชิญสมาชิก → สร้าง Invitation (status: PENDING) + Notification (linked to invitation)
+2. ผู้รับเปิด Notification Bell → เห็นปุ่ม **Accept** / **Reject** สำหรับ invitation ที่ยัง PENDING
+3. กด Accept → กลายเป็น Board Member → เห็น Board ในหน้า Boards
+4. กด Reject → สถานะเป็น DECLINED → ไม่เห็น Board
+5. Re-invite หลัง Reject → สร้าง Invitation ใหม่ (ไม่ reuse ตัวเดิม)
 
 ### Notifications (WebSocket Real-time)
 
-* `WS /ws/notifications/?token=<access_token>` — รับ Notification ใหม่แบบ Real-time (ส่งผ่าน Vite Proxy ด้วย `ws: true` ทั้ง Dev และ Preview)
+* `WS /ws/notifications/?token=<access_token>` — รับ Notification ใหม่แบบ Real-time (ผ่าน Nginx WebSocket Proxy)
 * เมื่อมี Notification ใหม่ Backend จะ Push JSON ในรูปแบบเดียวกับ `GET /notifications` ผ่าน Django Signals รวมทั้งยังคง Reconnect อัตโนมัติเมื่อ Connection หลุด
+* WebSocket ผ่าน `uvicorn[standard]` + `websockets` library
 
 
 
 ### Frontend Production Build
 
-Frontend ใช้:
+Frontend build ผ่าน Vite และ serve ผ่าน Nginx:
 
 ```bash
-npm run preview
+# Build frontend
+docker exec kanban_frontend npm run build
+
+# Restart nginx
+docker compose restart nginx
 ```
 
-เพื่อให้บริการ Production Bundle ผ่าน Vite Preview Server
-
-หากมีการแก้ไข Frontend ให้ Build ใหม่ด้วย:
+หากมีการแก้ไข Frontend:
 
 ```bash
 docker compose up -d
 ```
+
+### Backend (WebSocket Support)
+
+Backend ใช้ `uvicorn[standard]` พร้อม `websockets` library สำหรับ WebSocket support:
+
+```bash
+# Rebuild backend (เช่น เพิ่ม dependency)
+docker compose build backend
+docker compose up -d backend
+```
+
+Backend ใช้ Bind Mount (`./backend:/app`) ดังนั้นการแก้ไข Python code จะมีผลทันทีผ่าน Uvicorn reload
 
 
 
