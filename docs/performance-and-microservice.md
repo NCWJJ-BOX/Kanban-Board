@@ -1,120 +1,614 @@
-# สถาปัตยกรรมและ Performance ของ Kanban Board (ตามโค้ดจริง)
+# สถาปัตยกรรมและ Performance ของ Kanban Board
 
-**อ้างอิงจาก:** สิ่งที่ implement จริงแล้วในโค้ดเท่านั้น — ไม่รวมแผนที่ยังไม่ได้ทำ (ส่วน Microservice ถูกถอดออกแล้ว เพราะจริงๆ แล้วระบบนี้เป็นแอปตัวเดียว ไม่ได้แยกเป็น microservice)
-
----
-
-## 1. ระบบนี้คืออะไร
-
-Kanban Board เป็น full-stack web app **ภาษาเดียว** ประกอบด้วยสองส่วนหลัก:
-
-- **Backend** — Django REST Framework API ทำหน้าที่จัดการข้อมูลทั้งหมด (บอร์ด, คอลัมน์, งาน, สมาชิก, การ์ด, การแจ้งเตือน, คำเชิญ)
-- **Frontend** — React SPA ที่คุยกับ backend ผ่าน JSON API ล้วนๆ
-
-ทั้งคู่รันอยู่บนเครื่องเดียวกันผ่าน Docker Compose โดยมีทั้งหมด **4 คอนเทนเนอร์**: `db` (PostgreSQL 16), `backend` (Django), `pgadmin` (ตัวจัดการฐานข้อมูล), และ `frontend` (React) — ไม่มี Redis, ไม่มี message queue, ไม่มีบริการย่อยแยกกัน นี่คือ monolith ที่วางคู่กันบน docker network เดียว
+**อ้างอิงจาก:** Implementation จริงใน Source Code ปัจจุบันเท่านั้น
+**หมายเหตุ:** เอกสารนี้ไม่รวม Architecture หรือ Optimization ที่ยังไม่ได้ Implement และไม่ใช้แนวคิด Microservices เนื่องจากระบบปัจจุบันเป็น Monolithic Application
 
 ---
 
-## 2. เทคโนโลยีที่ใช้จริง (จากโค้ด ไม่ใช่จากแผน)
+## 1. ภาพรวมระบบ
 
-| ชั้น | เทคโนโลยี | หมายเหตุ |
-|---|---|---|
-| Backend | Python 3.12 + Django 5+ + DRF | รันด้วย `manage.py runserver` ใน Dockerfile (ยังเป็น dev server ไม่ใช่ gunicorn) |
-| Auth | SimpleJWT — access (อายุ 1 ชั่วโมง) + refresh | Login ด้วย **email** (User model กำหนด `USERNAME_FIELD = 'email'`) |
-| Database | PostgreSQL 16 | PK เป็น UUID ทั้งตาราง, มี FK constraint, unique constraint, index อัตโนมัติจาก PK/FK/unique |
-| Frontend | **React 19** + Vite 8 + react-router-dom 7 | axios เรียก `/api/v1`, drag & drop ด้วย @dnd-kit |
-| Container | Docker Compose | 4 services, code mount เข้า container (รันแบบ live volume) |
+Kanban Board เป็น **Full-Stack Web Application แบบ Monolithic Architecture** ประกอบด้วย 2 ส่วนหลัก:
 
-จุดหนึ่งที่ควรบันทึก: ในไฟล์เอกสารเก่าเขียนว่า React 18 แต่ของจริงใน `frontend/package.json` คือ **React 19.2.8** — อันนี้แก้ให้ตรงแล้ว
+* **Backend** — Django REST Framework ทำหน้าที่จัดการ Business Logic, Authentication, Authorization และ Data Access
+* **Frontend** — React SPA ทำหน้าที่แสดงผลและสื่อสารกับ Backend ผ่าน JSON API
 
----
+ทั้งสองส่วนทำงานร่วมกันผ่าน Docker Compose โดยระบบปัจจุบันประกอบด้วย **4 Containers**:
 
-## 3. เล่าเรื่องข้อมูล: โมเดลหลักๆ มีอะไรบ้าง
+```text
+┌─────────────────────────────────────────────┐
+│              Docker Compose                 │
+│                                             │
+│  ┌────────────┐       ┌──────────────┐      │
+│  │  Frontend  │──────▶│    Backend   │      │
+│  │   React    │ HTTP  │ Django + DRF │      │
+│  └────────────┘       └───────┬──────┘      │
+│                               │             │
+│                         ┌─────▼─────┐       │
+│                         │ PostgreSQL│       │
+│                         │    16     │       │
+│                         └───────────┘       │
+│                                             │
+│  ┌────────────┐                             │
+│  │  pgAdmin   │                             │
+│  └────────────┘                             │
+└─────────────────────────────────────────────┘
+```
 
-ระบบมีตารางหลัก 9 ตาราง ในแอป Django สองตัวคือ `accounts` และ `boards`:
+ไม่มี Redis, Message Queue หรือ Service แยกสำหรับงาน Background
 
-- **User** — ไอดีเป็น UUID, login ด้วย `email` โดย `username` เอาไว้โชว์เฉยๆ
-- **Board** — บอร์ด มี `owner`, `description`, และ `deleted_at` สำหรับ**ลบแบบนุ่มนวล** (soft delete) — เวลาลบบอร์ดโค้ดจะรัน `UPDATE boards SET deleted_at=now()` แทนการ DELETE ไล่ cascade ไปทั้งตารางลูก
-- **BoardMember** — สมาชิกในบอร์ด พร้อม `role` สามระดับ: `owner` / `editor` / `viewer` (unique กัน board+user ซ้ำ)
-- **Column** — คอลัมน์ในบอร์ด มี `position` เป็น **float** ใช้เรียงลำดับ
-- **Tag** — แท็กของบอร์ด (ชื่อ + สี hex) unique ต่อ board
-- **Task** — การ์ดงาน อยู่ในคอลัมน์ มี `position` เป็น float เหมือนกัน
-- **TaskAssignee** — ผู้รับผิดชอบงาน (N:N ระหว่าง task กับ user)
-- **TaskTag** — ความสัมพันธ์ task ↔ tag (N:N)
-- **Invitation** — คำเชิญเข้าร่วมบอร์ดทางอีเมล มีสถานะ `pending` / `accepted` / `declined`
-- **Notification** — การแจ้งเตือน มีสองประเภท `assignment` (งานถูกมอบหมาย) กับ `system` (เช่นได้รับคำเชิญ)
-
-ทุกตารางใช้ **UUID เป็น primary key** ที่สร้างจากฝั่งโค้ด (`default=uuid.uuid4`) — ดีต่อการกรองข้อมูลและไม่เปิดให้คนเดา id ทั้งหลายมาสุ่มเรียก API ได้
-
----
-
-## 4. เล่าเรื่องการทำงาน: flow สำคัญๆ
-
-### 4.1 การยืนยันตัวตน (Auth)
-
-หน้า `Register` / `Login` จะได้ `access_token` + `refresh_token` กลับมาเป็น **JWT** โดย access หมดอายุใน 1 ชั่วโมง (`expires_in: 3600` ในโค้ด `accounts/views.py`)
-
-ฝั่ง frontend ใน `api.js` มี **interceptor** ที่ฉลาดอยู่:
-- ทุก request จะแนบ `Authorization: Bearer <access_token>` อัตโนมัติ
-- ถ้า server ตอบ 401 → ขอ refresh token ใหม่ (**single-flight** — ถ้าโดน 401 พร้อมกันหลาย request จะ refresh แค่ครั้งเดียวแล้ว retry ต่อ)
-- ถ้า refresh ไม่ผ่าน → ลบ session และส่ง event `kanban:logout` ให้ UI รู้ตัว
-
-### 4.2 เรื่อง permission — ใครทำอะไรได้บ้าง
-
-โค้ดแยก permission เป็น 3 คลาสใน `boards/permissions.py`:
-- `HasBoardAccess` — เข้าถึงบอร์ดได้ (owner หรือ member)
-- `CanEditBoard` — แก้ไขได้ต้องเป็น owner หรือ editor
-- `IsBoardOwner` — เฉพาะ owner (เช่นดึงสมาชิกออก หรือส่งคำเชิญ)
-
-ทุก endpoint มี permission บังคับเสมอ และ**ทุก query เริ่มจาก `request.user`** เช่นรายการบอร์ดกรอง `Q(owner=user) | Q(members__user=user)` — ทำให้คนอื่นมองไม่เห็นบอร์ดที่ไม่ใช่ของตัวเอง
-
-### 4.3 เล่าเรื่อง drag & drop กับ "fractional indexing"
-
-จุดที่น่าสนใจที่สุดของระบบ: ใช้ **float position** ในการลากการ์ด
-
-- เวลาสร้างคอลัมน์/งานใหม่ → อันใหม่ไปต่อ**ท้ายสุด** (`_next_position` = ค่า position สุดท้าย + 1)
-- เวลาลากการ์ด → ฝั่ง frontend (`insertionPosition()` ใน `Kanban.jsx`) **คำนวณค่ากลาง** (average) ระหว่างเพื่อนบ้านซ้าย-ขวา แล้วส่ง `PATCH /tasks/{id}/move` พร้อม `{column_id, position}`
-
-ผลลัพธ์คือการเลื่อนการ์ด **update แค่ 1 แถว** ไม่ต้องไล่ shift position ทั้งคอลัมน์ — ไม่ว่าจะในบอร์ดใหญ่แค่ไหน การย้ายครั้งหนึ่งเสียงานเขียนแค่บรรทัดเดียว (classic คิดแบบนี้แลกกับการอ่านที่ซับซ้อนขึ้นนิดหน่อย แต่ตรงนี้แลกคุ้ม)
-
-### 4.4 เล่าเรื่องการแจ้งเตือน
-
-การแจ้งเตือนเกิดจากสองที่:
-- มีคนมอบหมายงานให้คุณ (`TaskAssigneeChangeView`)
-- มีคนส่งคำเชิญเข้าร่วมบอร์ดให้คุณ (`BoardInviteView`)
-
-แต่การ "รับ" การแจ้งเตือนยังเป็นแบบง่ายๆ: frontend ใน `useNotifications.js` **poll ไปที่ `/notifications` ทุก 5 วินาที** และ backend ตัดมาให้แค่ **50 อันล่าสุด** (`qs[:50]`) — response เล็กเสมอ ไม่มีทางโตไม่รู้จบ ส่วนการ mark read เป็น optimistic (เปลี่ยน UI ก่อน แล้วค่อยยิง API)
-
-### 4.5 เล่าเรื่องคำเชิญ
-
-`BoardInviteView` รับ `{email, role}` → สร้าง Invitation (กันซ้ำด้วย `get_or_create`) ถ้าอีเมลนั้นมี user อยู่ในระบบแล้วและยังไม่ได้เป็นสมาชิก → สร้าง Notification ให้ด้วย ส่วนตัวรับคำเชิญต้อง login ด้วยอีเมลที่ตรงกัน (`InvitationAcceptView` เช็ค `invitation.email == user.email`) ถึงจะกด accept แล้วเข้าเป็นสมาชิกบอร์ดได้
+ดังนั้น Architecture ปัจจุบันจึงเป็น **Monolith ที่แยก Frontend และ Backend เป็น Containers** แต่ยังคงเป็น Application เดียวในระดับระบบ
 
 ---
 
-## 5. สิ่งที่ทำเรื่อง performance ไว้แล้ว (ตรวจจากโค้ดจริง)
+## 2. Technology Stack
 
-1. **จัดการ N+1 ในจุดที่ฝั่งอ่านงาน** — `TaskSerializer.get_assignees` / `get_tags` ใช้ `select_related('user')` / `select_related('tag')` และ `ColumnTaskListCreateView.get_queryset` prefetch `assignees__user` กับ `tag_links__tag` ไว้ล่วงหน้า; `get_members` ก็ใช้ `select_related('user')` เช่นกัน
-2. **Soft delete ระดับบอร์ด** — ลบมุมกับข้อมูลลูกหลายตาราง ไม่เจอ update storm และเก็บประวัติได้
-3. **ตัด notification ที่ 50** — response มีขนาดคงที่
-4. **ทุก query กรองตาม user** — data isolation + result set เล็ก
-5. **Board detail โหลดทีเดียว** — frontend เรียก `GET /boards/{id}` ครั้งเดียวได้ทั้งบอร์ด (columns + tasks + tags) ไม่ต้องยิง N รอบ
-6. **Position เป็น float** — การย้ายการ์ดแก้ 1 แถว (ข้อ 4.3)
+เทคโนโลยีในตารางนี้อ้างอิงจาก Implementation ที่ใช้งานจริงในโปรเจกต์
+
+| Layer            | Technology                    | รายละเอียด                   |
+| ---------------- | ----------------------------- | ---------------------------- |
+| Backend          | Python 3.12 + Django 5+ + DRF | REST API และ Business Logic  |
+| Authentication   | SimpleJWT                     | JWT Access / Refresh Token   |
+| Database         | PostgreSQL 16                 | Relational Database          |
+| Frontend         | React 19.2.8                  | Single Page Application      |
+| Build Tool       | Vite 8                        | Frontend Development / Build |
+| Routing          | react-router-dom 7            | Client-side Routing          |
+| HTTP Client      | Axios                         | ติดต่อ REST API              |
+| Drag & Drop      | @dnd-kit                      | Kanban Drag & Drop           |
+| Containerization | Docker Compose                | จัดการ Application Services  |
+
+### Authentication
+
+ระบบใช้ JWT Authentication โดยแบ่ง Token เป็น:
+
+```text
+Access Token
+└── อายุ 60 นาที
+
+Refresh Token
+└── ใช้สำหรับออก Access Token ใหม่
+```
+
+ระบบใช้ Email เป็นหลักในการ Login โดย User Model กำหนด:
+
+```python
+USERNAME_FIELD = "email"
+```
 
 ---
 
-## 6. ข้อจำกัดที่เห็นจริงในโค้ด (ยังไม่ได้ทำ — เขียนไว้ให้ตรงความจริง)
+## 3. Data Model
 
-ตรงนี้บอกตามความจริงว่า "อะไรยังไม่มี" เพื่อไม่ให้เอกสารดูเกินจริง:
+ระบบมี Model หลักสำหรับจัดการข้อมูล Kanban และ User โดยแบ่งออกเป็น 2 Django Apps:
 
-- **Board Detail ยังมี N+1 อยู่** — ตัว `BoardDetailSerializer` ฝัง columns → tasks → assignees/tags แต่ `BoardDetailView` ไม่ได้ prefetch ชั้นใน-ในแบบ `columns__tasks__assignees__user` — บอร์ดใหญ่จะรัน query ซ้ำหลายสิบครั้งต่อการ์ด (ในขณะที่รายการงานต่อคอลัมน์ prefetch แล้ว)
-- **`column_count` / `task_count` อ่านเพิ่มบอร์ดละ 2 query** — ใน `BoardSummarySerializer` ใช้ `.count()` ตรงๆ → ตอน list บอร์ดหลายใบจะได้ประมาณ 2N+1 query
-- **ไม่มี pagination ของจริง** — มีแค่ `[:50]` ของ notification; `/boards`, `/tasks` โหลดหมดยวง
-- **ยังไม่มี cache / WebSocket / background job** — ใช้ polling 5 วิ อย่างเดียว, ตอน assign/invite สร้าง notification แบบ sync ใน request เดียว
-- **backend รันด้วย dev server (`runserver`)** — ยังไม่มี gunicorn/uvicorn, ไม่มี connection pool (`CONN_MAX_AGE`), ไม่มี PgBouncer
-- **ค่า default ยังเป็นแบบ dev** — `DEBUG=1`, `SECRET_KEY` เป็นค่า dev default, `ALLOWED_HOSTS = ['*']` (ยอมรับทุก host) — พร้อมใช้งานจริงต้องปิด/ตั้งค่าใหม่
+```text
+accounts
+└── User
+
+boards
+├── Board
+├── BoardMember
+├── Column
+├── Task
+├── Tag
+├── TaskAssignee
+├── TaskTag
+├── Invitation
+└── Notification
+```
+
+### Model หลัก
+
+* **User** — บัญชีผู้ใช้ ใช้ UUID เป็น Primary Key และ Login ด้วย Email
+* **Board** — Kanban Board มี Owner, Description และ Soft Delete ผ่าน `deleted_at`
+* **BoardMember** — ความสัมพันธ์ระหว่าง User และ Board พร้อม Role
+* **Column** — คอลัมน์ของ Board พร้อมค่า `position`
+* **Task** — การ์ดงานภายใน Column พร้อมค่า `position`
+* **Tag** — Tag ของ Board พร้อมชื่อและสีในรูปแบบ Hex
+* **TaskAssignee** — ความสัมพันธ์ระหว่าง Task และ User สำหรับกำหนดผู้รับผิดชอบ
+* **TaskTag** — ความสัมพันธ์ระหว่าง Task และ Tag
+* **Invitation** — คำเชิญเข้าร่วม Board ผ่าน Email
+* **Notification** — การแจ้งเตือนสำหรับ Assignment และ System Event
+
+ทุก Model ใช้ **UUID เป็น Primary Key** และสร้างค่าเริ่มต้นจาก `uuid.uuid4`
+
+การใช้ UUID ช่วยลดการเปิดเผยลำดับของ Record และทำให้ ID สามารถสร้างได้โดยไม่ต้องพึ่งพา Sequence แบบ Integer
 
 ---
 
-## 7. สรุปสั้นๆ
+# 4. Core Application Flow
 
-นี่คือแอป monolith ตัวเดียวที่ทำงานจริงครบวงจร: JWT auth → board/column/task CRUD → drag & drop ด้วย fractional position → มอบหมายงาน/แท็ก → คำเชิญ → แจ้งเตือน (polling) ทุกอย่างอ่านและรันได้ในโค้ดปัจจุบัน โดยมีจุดที่ตั้งใจทำเรื่อง performance ไว้หลายจุด (prefetch, soft delete, position float, การตัด payload) และมีจุดที่รู้ว่ายังไม่ทำอีกหลายจุดตามรายการข้อ 6 — เอกสารนี้จะบอกแค่สิ่งที่เห็นจริงในโค้ดเท่านั้น
+## 4.1 Authentication Flow
+
+Frontend ส่ง Email และ Password ไปยัง Backend:
+
+```text
+React
+  │
+  │ POST /auth/login
+  ▼
+Django REST Framework
+  │
+  │ Validate credentials
+  ▼
+SimpleJWT
+  │
+  ├── Access Token
+  └── Refresh Token
+  │
+  ▼
+React
+```
+
+หลังจาก Login สำเร็จ Frontend จะเก็บ Token และแนบ Access Token กับ Request ที่ต้อง Authentication
+
+### Axios Interceptor
+
+`frontend/src/api.js` มี Interceptor สำหรับจัดการ Authentication Token อัตโนมัติ
+
+```text
+Request
+   │
+   ▼
+Attach Access Token
+   │
+   ▼
+Backend
+   │
+   ├── 2xx ───────────────▶ Return Response
+   │
+   └── 401
+        │
+        ▼
+   Refresh Token
+        │
+        ├── Success
+        │     └── Retry Original Request
+        │
+        └── Failed
+              └── Logout
+```
+
+ระบบรองรับ **Single-Flight Refresh** โดยหากหลาย Request ได้ `401` พร้อมกัน จะไม่ยิง Refresh Request ซ้ำหลายครั้ง แต่ใช้การ Refresh เพียงครั้งเดียวแล้วนำ Token ใหม่ไป Retry Request ที่รออยู่
+
+หาก Refresh Token ไม่สามารถใช้งานได้ ระบบจะลบ Session และส่ง Event:
+
+```text
+kanban:logout
+```
+
+เพื่อแจ้งให้ UI ดำเนินการ Logout
+
+---
+
+## 4.2 Authorization และ Data Isolation
+
+ระบบแยก Permission ออกเป็น 3 ระดับผ่าน `boards/permissions.py`
+
+| Permission       | หน้าที่                                          |
+| ---------------- | ------------------------------------------------ |
+| `HasBoardAccess` | ตรวจสอบว่า User เป็น Owner หรือ Member ของ Board |
+| `CanEditBoard`   | อนุญาตให้ Owner หรือ Editor แก้ไขข้อมูล          |
+| `IsBoardOwner`   | จำกัด Operation ที่ต้องใช้สิทธิ์ Owner           |
+
+ทุก Endpoint ที่เข้าถึงข้อมูล Board จะตรวจสอบ User ที่กำลัง Authentication ก่อน
+
+ตัวอย่างการ Query Board:
+
+```python
+Q(owner=user) | Q(members__user=user)
+```
+
+แนวทางนี้ช่วยให้ User เห็นเฉพาะ Board ที่ตนเองเป็น Owner หรือ Member และทำหน้าที่เป็นทั้ง **Authorization Layer และ Data Isolation Layer**
+
+---
+
+## 4.3 Drag & Drop และ Fractional Indexing
+
+หนึ่งในจุดสำคัญของระบบคือการจัดลำดับ Column และ Task ด้วยค่า `position` แบบ Float
+
+เมื่อสร้าง Task หรือ Column ใหม่ ระบบจะกำหนด Position ต่อจากรายการสุดท้ายผ่าน `_next_position`
+
+ตัวอย่าง:
+
+```text
+Task A → 0.0
+Task B → 1.0
+Task C → 2.0
+```
+
+หากผู้ใช้ลาก Task C ไปไว้ระหว่าง A และ B:
+
+```text
+new_position = (0.0 + 1.0) / 2
+              = 0.5
+```
+
+Frontend (`Kanban.jsx`) จะคำนวณ Position ใหม่ผ่าน `insertionPosition()` แล้วส่งไปยัง:
+
+```http
+PATCH /tasks/{task_id}/move
+```
+
+พร้อมข้อมูล:
+
+```json
+{
+  "column_id": "target-column-uuid",
+  "position": 0.5
+}
+```
+
+### ผลด้าน Performance
+
+วิธีนี้ทำให้การ Reorder สามารถ Update เฉพาะ Task ที่ถูกย้าย:
+
+```text
+Traditional Integer Ordering
+
+A = 0
+B = 1
+C = 2
+D = 3
+
+Move D → between A and B
+
+D → 1
+B → 2
+C → 3
+
+ต้อง Update หลาย Row
+```
+
+ขณะที่ Fractional Indexing:
+
+```text
+A = 0
+B = 1
+C = 2
+D = 3
+
+Move D → between A and B
+
+D → 0.5
+
+Update เพียง 1 Row
+```
+
+ดังนั้นการ Reorder ไม่จำเป็นต้อง Shift Position ของ Task รายการอื่นใน Column
+
+> **ข้อจำกัด:** หากมีการ Insert ระหว่าง Position เดิมซ้ำจำนวนมาก ค่า Float อาจมีระยะห่างลดลงเรื่อย ๆ จึงควรมี Re-normalization / Rebalancing ในระยะยาวหากระบบต้องรองรับการ Reorder จำนวนมากอย่างต่อเนื่อง
+
+---
+
+# 5. Notification Architecture
+
+ระบบ Notification ปัจจุบันใช้ **Polling** แทน WebSocket หรือ Push Notification
+
+Notification ถูกสร้างจาก 2 Flow หลัก:
+
+```text
+Task Assignment
+      │
+      ▼
+TaskAssigneeChangeView
+      │
+      ▼
+Create Notification
+(type = assignment)
+
+
+Board Invitation
+      │
+      ▼
+BoardInviteView
+      │
+      ▼
+Create Notification
+(type = system)
+```
+
+Frontend ใช้ `useNotifications.js` Polling ทุก **5 วินาที**:
+
+```text
+Frontend
+   │
+   │ GET /notifications
+   ▼
+Backend
+   │
+   │ latest 50 records
+   ▼
+Frontend
+   │
+   └── Update Notification Badge
+```
+
+Backend จำกัดจำนวน Notification ที่ส่งกลับ:
+
+```python
+qs[:50]
+```
+
+ทำให้ Payload มีขนาดจำกัดและไม่เพิ่มขึ้นอย่างไม่มีที่สิ้นสุด
+
+การ Mark as Read ใช้ **Optimistic Update**:
+
+```text
+User clicks notification
+        │
+        ▼
+Update UI immediately
+        │
+        ▼
+PATCH /notifications/{id}/read
+```
+
+---
+
+# 6. Invitation Flow
+
+ระบบ Invitation ใช้ Email เป็นตัวระบุผู้รับคำเชิญ
+
+Flow:
+
+```text
+Owner
+  │
+  │ email + role
+  ▼
+BoardInviteView
+  │
+  ├── Check existing invitation
+  │
+  ├── Create / reuse Invitation
+  │
+  └── Check existing User
+          │
+          └── Create Notification
+```
+
+ระบบใช้ `get_or_create` เพื่อป้องกันการสร้าง Invitation ซ้ำในกรณีที่มี Invitation เดิมอยู่
+
+การ Accept Invitation ต้องผ่านการตรวจสอบว่า Email ของผู้ใช้ตรงกับ Email ที่ได้รับ Invitation:
+
+```python
+invitation.email == user.email
+```
+
+จากนั้นจึงเพิ่ม User เข้าเป็น Board Member
+
+---
+
+# 7. Performance Optimization ที่ Implement แล้ว
+
+จาก Code ปัจจุบัน มีการปรับปรุง Performance ในหลายส่วน
+
+### 7.1 ลด N+1 Query ใน Task List
+
+`TaskSerializer` ใช้:
+
+```python
+select_related("user")
+select_related("tag")
+```
+
+ร่วมกับการ Prefetch จาก `ColumnTaskListCreateView`:
+
+```text
+assignees__user
+tag_links__tag
+```
+
+ช่วยลด Query ที่เกิดจากการโหลด Assignee และ Tag ของแต่ละ Task
+
+ในส่วน Member List ก็ใช้:
+
+```text
+select_related("user")
+```
+
+เพื่อลด Query ซ้ำสำหรับข้อมูล User
+
+---
+
+### 7.2 Board Detail โหลดข้อมูลแบบรวม
+
+Frontend สามารถเรียก:
+
+```http
+GET /boards/{board_id}
+```
+
+เพื่อรับข้อมูล Board พร้อม:
+
+```text
+Board
+├── Members
+├── Columns
+│   └── Tasks
+│       ├── Assignees
+│       └── Tags
+└── Board Tags
+```
+
+ทำให้หน้า Kanban สามารถโหลดข้อมูลหลักของ Board ผ่าน Request เดียว แทนการเรียก API แยกสำหรับแต่ละ Resource
+
+---
+
+### 7.3 จำกัด Notification Payload
+
+Notification จำกัดไว้ที่ 50 รายการล่าสุด:
+
+```python
+qs[:50]
+```
+
+ช่วยควบคุมขนาด Response และลดปริมาณข้อมูลที่ต้องส่งระหว่าง Frontend และ Backend
+
+---
+
+### 7.4 User-Based Query Filtering
+
+Query ที่เกี่ยวข้องกับ Board จะกรองตาม User ที่กำลัง Authentication
+
+ตัวอย่าง:
+
+```text
+owner = request.user
+OR
+member.user = request.user
+```
+
+นอกจากช่วยเรื่อง Authorization แล้ว ยังช่วยลด Result Set ที่ Backend ต้องนำมาประมวลผล
+
+---
+
+### 7.5 Efficient Task Reordering
+
+Fractional Indexing ทำให้การย้าย Task สามารถแก้ไขเฉพาะ Row ที่ถูกย้าย โดยไม่ต้อง Update Task รายการอื่นใน Column
+
+---
+
+### 7.6 Soft Delete ระดับ Board
+
+Board ใช้ Soft Delete ผ่าน:
+
+```text
+deleted_at
+```
+
+แทนการลบข้อมูล Board และข้อมูลที่เกี่ยวข้องแบบ Cascade ทันที
+
+ช่วยลดความเสี่ยงจากการลบข้อมูลถาวรและเปิดทางให้รองรับ Recovery/Audit ในอนาคต
+
+---
+
+# 8. Current Limitations
+
+ส่วนนี้ระบุข้อจำกัดของ Implementation ปัจจุบันตาม Code จริง เพื่อไม่ให้ Architecture Documentation แสดงความสามารถเกินกว่าที่ระบบมีอยู่
+
+### 8.1 Board Detail ยังมี N+1 Query
+
+แม้ Task List จะมีการ Prefetch แล้ว แต่ `BoardDetailSerializer` มีการ Nest:
+
+```text
+Board
+└── Columns
+    └── Tasks
+        ├── Assignees
+        └── Tags
+```
+
+ขณะที่ `BoardDetailView` ยังไม่ได้ Prefetch ความสัมพันธ์ทั้งหมดในระดับ Nested
+
+ดังนั้น Board ที่มี Task จำนวนมากอาจทำให้เกิด Query เพิ่มขึ้นตามจำนวน Resource ที่ถูก Serialize
+
+---
+
+### 8.2 Board Summary มี Count Query เพิ่มเติม
+
+`BoardSummarySerializer` ใช้ `.count()` สำหรับ:
+
+```text
+column_count
+task_count
+```
+
+จึงอาจเกิด Query เพิ่มประมาณ 2 Query ต่อ Board ในกรณีที่มี Board หลายรายการ
+
+---
+
+### 8.3 ยังไม่มี Pagination สำหรับ Resource หลัก
+
+ปัจจุบัน Resource หลัก เช่น:
+
+```text
+/boards
+/tasks
+```
+
+ยังไม่มี Pagination เต็มรูปแบบ
+
+ข้อยกเว้นคือ Notification ที่จำกัดไว้ที่ 50 รายการ
+
+ดังนั้นหากข้อมูลเพิ่มขึ้นมากในอนาคต ควรพิจารณา Pagination หรือ Cursor-based Pagination
+
+---
+
+### 8.4 ยังไม่มี Cache หรือ Real-Time Transport
+
+ระบบยังไม่มี:
+
+```text
+Redis
+WebSocket
+Message Queue
+Background Worker
+```
+
+Notification จึงใช้ Polling ทุก 5 วินาที และการสร้าง Notification เกิดขึ้นภายใน Request เดียวกับ Operation หลัก
+
+---
+
+### 8.5 Backend ยังใช้ Development Server
+
+ปัจจุบัน Backend รันผ่าน:
+
+```text
+manage.py runserver
+```
+
+จึงยังไม่ใช่ Production WSGI/ASGI Server เช่น Gunicorn หรือ Uvicorn
+
+นอกจากนี้ยังไม่ได้ตั้งค่า:
+
+```text
+Database Connection Pooling
+PgBouncer
+```
+
+---
+
+### 8.6 Configuration ยังเป็น Development Configuration
+
+Configuration ปัจจุบันยังมีค่าที่เหมาะกับ Development Environment เช่น:
+
+```text
+DEBUG=1
+SECRET_KEY=<development value>
+ALLOWED_HOSTS=*
+```
+
+หากนำไป Production ควรแยก Environment Configuration และกำหนดค่าที่เหมาะสมกับ Production เช่น:
+
+* ปิด `DEBUG`
+* ใช้ Secret Key จาก Environment/Secret Manager
+* จำกัด `ALLOWED_HOSTS`
+* กำหนด Security Headers และ HTTPS
+* แยก Development / Production Configuration
+
+---
+
+# 9. Architecture Summary
+
+ระบบปัจจุบันเป็น **Monolithic Full-Stack Application** ที่ประกอบด้วย React Frontend, Django REST API และ PostgreSQL Database โดยทั้งหมดทำงานผ่าน Docker Compose
+
+จุดที่มีการออกแบบด้าน Performance แล้ว ได้แก่:
+
+```text
+┌──────────────────────────────────────┐
+│          Performance Focus           │
+├──────────────────────────────────────┤
+│ • select_related / prefetch_related  │
+│ • User-based Query Filtering         │
+│ • Fractional Indexing                │
+│ • Notification Limit (50 records)    │
+│ • Board Detail API                   │
+│ • Soft Delete                        │
+│ • Database Constraints               │
+└──────────────────────────────────────┘
+```
+
+ขณะเดียวกัน ระบบยังมีข้อจำกัดที่ระบุได้จาก Implementation ปัจจุบัน ได้แก่ Nested N+1 ใน Board Detail, Count Query เพิ่มเติม, การไม่มี Pagination สำหรับ Resource หลัก, การใช้ Polling แทน Real-time Communication และการใช้ Django Development Server
+
+
