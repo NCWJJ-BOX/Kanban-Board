@@ -12,21 +12,21 @@ Kanban Board เป็น **Full-Stack Web Application แบบ Monolithic Arch
 * **Backend** — Django REST Framework ทำหน้าที่จัดการ Business Logic, Authentication, Authorization และ Data Access
 * **Frontend** — React SPA ทำหน้าที่แสดงผลและสื่อสารกับ Backend ผ่าน JSON API
 
-ทั้งสองส่วนทำงานร่วมกันผ่าน Docker Compose โดยระบบปัจจุบันประกอบด้วย **4 Containers**:
+ทั้งสองส่วนทำงานร่วมกันผ่าน Docker Compose โดยระบบปัจจุบันประกอบด้วย **5 Containers**:
 
 ```text
 ┌─────────────────────────────────────────────┐
 │              Docker Compose                 │
 │                                             │
 │  ┌────────────┐       ┌──────────────┐      │
-│  │  Frontend  │──────▶│    Backend   │      │
-│  │   React    │ HTTP  │ Django + DRF │      │
-│  └────────────┘       └───────┬──────┘      │
-│                               │             │
-│                         ┌─────▼─────┐       │
-│                         │ PostgreSQL│       │
-│                         │    16     │       │
-│                         └───────────┘       │
+│  │  Frontend  │──────▶│    Backend   │──┐   │
+│  │   React    │ HTTP  │ Django + DRF │  │   │
+│  └────────────┘       └───────┬──────┘  │   │
+│                               │         │   │
+│                         ┌─────▼─────┐ ┌─▼──┐│
+│                         │ PostgreSQL│ │Redis││
+│                         │    16     │ │  7  ││
+│                         └───────────┘ └────┘│
 │                                             │
 │  ┌────────────┐                             │
 │  │  pgAdmin   │                             │
@@ -34,7 +34,7 @@ Kanban Board เป็น **Full-Stack Web Application แบบ Monolithic Arch
 └─────────────────────────────────────────────┘
 ```
 
-ไม่มี Redis, Message Queue หรือ Service แยกสำหรับงาน Background
+Redis ถูกใช้งานเป็น Cache สำหรับ Board Detail และ Rate Limiting แต่ยังไม่มี Message Queue หรือ Background Worker สำหรับงานแบบ Asynchronous
 
 ดังนั้น Architecture ปัจจุบันจึงเป็น **Monolith ที่แยก Frontend และ Backend เป็น Containers** แต่ยังคงเป็น Application เดียวในระดับระบบ
 
@@ -49,6 +49,7 @@ Kanban Board เป็น **Full-Stack Web Application แบบ Monolithic Arch
 | Backend          | Python 3.12 + Django 5+ + DRF | REST API และ Business Logic  |
 | Authentication   | SimpleJWT                     | JWT Access / Refresh Token   |
 | Database         | PostgreSQL 16                 | Relational Database          |
+| Cache            | Redis 7 + django-redis        | Cache Board Detail และ Rate Limiting โดย fallback ไปใช้ LocMemCache เมื่อไม่มี `REDIS_URL` |
 | Frontend         | React 19.2.8                  | Single Page Application      |
 | Build Tool       | Vite 8                        | Frontend Development / Build |
 | Routing          | react-router-dom 7            | Client-side Routing          |
@@ -483,6 +484,76 @@ deleted_at
 
 ---
 
+### 7.7 Redis Cache สำหรับ Board Detail
+
+`GET /boards/{board_id}` เป็น Endpoint ที่มี Query หนักที่สุดในระบบ เนื่องจากต้อง Serialize ข้อมูลทั้งหมดของ Board จึงมีการ Cache Payload ไว้ที่ Redis (หรือ LocMemCache เมื่อไม่มีการตั้ง `REDIS_URL`)
+
+Cache เป็นแบบ **Per-User** เพราะ Payload มี Field `role` ที่ขึ้นอยู่กับ User ที่เรียก:
+
+```text
+board_detail:{board_id}:{version}:{user_id}
+```
+
+โดย `version` มาจาก Key ที่ใช้ Version-Bump:
+
+```text
+board_ver:{board_id}
+```
+
+Flow:
+
+```text
+GET /boards/{board_id}
+      │
+      ▼
+ตรวจสอบ Permission (query DB)
+      │
+      ▼
+Cache Hit? ──yes──▶ Return cached payload
+      │
+      no
+      ▼
+Serialize Board Detail
+      │
+      ▼
+เขียน Cache (TTL 5 นาที)
+```
+
+การ Invalidate ใช้หลักการ **Version-Bump** แทนการลบ Key ทีละรายการ โดยเมื่อข้อมูลของ Board เปลี่ยน ระบบจะลบ `board_ver:{board_id}` ทิ้ง ทำให้ Cache เก่าถูกทิ้งโดยอัตโนมัติ และ Key ถัดไปจะมี Version ใหม่
+
+Signals (`boards/signals.py`) จะจัดการ Invalidate ผ่าน `post_save` / `post_delete` ของ Model:
+
+```text
+Board, Column, Task, Tag, BoardMember, TaskTag, TaskAssignee
+```
+
+ด้วยวิธีนี้ Cache จึงสอดคล้องกับข้อมูลในฐานข้อมูลเสมอ โดยไม่ต้องใช้ `delete_pattern` ซึ่งไม่รองรับใน LocMemCache
+
+> **หมายเหตุ:** การตรวจสอบ Permission ยังคง Query ฐานข้อมูลทุกครั้งก่อนอ่าน Cache เพื่อไม่ให้ข้อมูลไป Cache ครอบ Permission Checking
+
+---
+
+### 7.8 API Rate Limiting
+
+ระบบใช้ DRF Throttling ผ่าน Redis (หรือ LocMemCache เมื่อไม่มี `REDIS_URL`) เพื่อจำกัดจำนวน Request:
+
+```python
+DEFAULT_THROTTLE_RATES = {
+    'anon': '60/min',
+    'user': '120/min',
+}
+```
+
+Anonymous User จำกัดที่ **60 Request/นาที** และ Authenticated User จำกัดที่ **120 Request/นาที**
+
+เมื่อเกินขีดจำกัด Backend จะตอบกลับ:
+
+```text
+429 Too Many Requests
+```
+
+---
+
 # 8. Current Limitations
 
 ส่วนนี้ระบุข้อจำกัดของ Implementation ปัจจุบันตาม Code จริง เพื่อไม่ให้ Architecture Documentation แสดงความสามารถเกินกว่าที่ระบบมีอยู่
@@ -535,18 +606,19 @@ task_count
 
 ---
 
-### 8.4 ยังไม่มี Cache หรือ Real-Time Transport
+### 8.4 ยังไม่มี Real-Time Transport และ Background Worker
 
-ระบบยังไม่มี:
+ระบบมี Redis แล้วในฐานะ Cache และ Rate Limiting แต่ยังไม่มี:
 
 ```text
-Redis
 WebSocket
 Message Queue
 Background Worker
 ```
 
 Notification จึงใช้ Polling ทุก 5 วินาที และการสร้าง Notification เกิดขึ้นภายใน Request เดียวกับ Operation หลัก
+
+นอกจากนี้การ Cache Board Detail ยังต้องตรวจสอบ Permission ผ่านการ Query ฐานข้อมูลทุกครั้งก่อนอ่าน Cache และการ Invalidate ผ่าน Signals ก็ยังเกิดขึ้นแบบ Synchronous ภายใน Request เดียวกัน ซึ่งในกรณีที่ต้องรองรับ Load สูงมาก ควรพิจารณาใช้ Message Queue / Background Worker ขับเคลื่อนงานเหล่านี้
 
 ---
 
@@ -606,9 +678,11 @@ ALLOWED_HOSTS=*
 │ • Board Detail API                   │
 │ • Soft Delete                        │
 │ • Database Constraints               │
+│ • Redis Cache (Board Detail)         │
+│ • API Rate Limiting                  │
 └──────────────────────────────────────┘
 ```
 
-ขณะเดียวกัน ระบบยังมีข้อจำกัดที่ระบุได้จาก Implementation ปัจจุบัน ได้แก่ Nested N+1 ใน Board Detail, Count Query เพิ่มเติม, การไม่มี Pagination สำหรับ Resource หลัก, การใช้ Polling แทน Real-time Communication และการใช้ Django Development Server
+ขณะเดียวกัน ระบบยังมีข้อจำกัดที่ระบุได้จาก Implementation ปัจจุบัน ได้แก่ Nested N+1 ใน Board Detail, Count Query เพิ่มเติม, การไม่มี Pagination สำหรับ Resource หลัก, การใช้ Polling แทน Real-time Communication และการใช้ Django Development Server รวมถึงงาน Invalidate Cache และสร้าง Notification ที่ยังเป็นแบบ Synchronous ภายใน Request
 
 

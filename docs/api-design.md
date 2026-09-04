@@ -18,6 +18,7 @@
 | **Error Response**                  | ใช้รูปแบบมาตรฐานของ DRF หรือ Custom Error ที่กำหนดไว้                     |
 | **List Response**                   | JSON Array โดยตรง ไม่มี wrapper object                                    |
 | **Mutation ที่ไม่มี Response Body** | HTTP `204 No Content`                                                     |
+| **Rate Limiting**                  | Anonymous `60 req/min`, Authenticated `120 req/min` ผ่าน DRF Throttling  |
 
 ### Authentication
 
@@ -52,6 +53,7 @@ Authorization: Bearer <access_token>
 * `403 Forbidden` — ไม่มีสิทธิ์ดำเนินการ
 * `404 Not Found` — ไม่พบ Resource
 * `409 Conflict` — Resource ซ้ำ เช่น Email
+* `429 Too Many Requests` — เกิน Rate Limit ที่กำหนด
 
 ### Permission Model
 
@@ -262,6 +264,8 @@ Response ประกอบด้วย:
 * Assignees
 * Tags
 * Statistics
+
+**Performance:** Payload ของ Endpoint นี้ถูก Cache แบบ Per-User ผ่าน Redis (หรือ LocMemCache เมื่อไม่มี `REDIS_URL`) เป็นเวลา 5 นาที และจะถูก Invalidate อัตโนมัติผ่าน Django Signals เมื่อข้อมูล Board, Column, Task, Tag หรือ Member ถูกแก้ไข
 
 ### PATCH `/boards/{board_id}`
 
