@@ -48,7 +48,7 @@ Redis ถูกใช้งานเป็น Cache สำหรับ Board Det
 | ---------------- | ----------------------------- | ---------------------------- |
 | Backend          | Python 3.12 + Django 5+ + DRF | REST API และ Business Logic  |
 | Real-time        | Django Channels + channels-redis | WebSocket Push Notification ผ่าน Redis Channel Layer (fallback เป็น InMemoryChannelLayer เมื่อไม่มี `REDIS_URL`) |
-| ASGI Server      | Uvicorn                       | Serve ASGI Application (`config.asgi:application`) |
+| ASGI Server      | Uvicorn[standard] + websockets | Serve ASGI Application (`config.asgi:application`) พร้อม WebSocket Support |
 | Authentication   | SimpleJWT                     | JWT Access / Refresh Token   |
 | Database         | PostgreSQL 16                 | Relational Database          |
 | Cache            | Redis 7 + django-redis        | Cache Board Detail และ Rate Limiting โดย fallback ไปใช้ LocMemCache เมื่อไม่มี `REDIS_URL` |
@@ -58,6 +58,7 @@ Redis ถูกใช้งานเป็น Cache สำหรับ Board Det
 | HTTP Client      | Axios                         | ติดต่อ REST API              |
 | Drag & Drop      | @dnd-kit                      | Kanban Drag & Drop           |
 | Containerization | Docker Compose                | จัดการ Application Services  |
+| Reverse Proxy    | Nginx (alpine)                | HTTP + WebSocket Proxy, รับ traffic ทั้งหมดจาก Port 5174 แล้วแบ่ง: `/ws/*` → backend, `/*` → frontend |
 
 ### Authentication
 
@@ -110,7 +111,7 @@ boards
 * **TaskAssignee** — ความสัมพันธ์ระหว่าง Task และ User สำหรับกำหนดผู้รับผิดชอบ
 * **TaskTag** — ความสัมพันธ์ระหว่าง Task และ Tag
 * **Invitation** — คำเชิญเข้าร่วม Board ผ่าน Email
-* **Notification** — การแจ้งเตือนสำหรับ Assignment และ System Event
+* **Notification** — การแจ้งเตือนสำหรับ Assignment และ System Event (เชื่อมโยงกับ Invitation ผ่าน FK `invitation`)
 
 ทุก Model ใช้ **UUID เป็น Primary Key** และสร้างค่าเริ่มต้นจาก `uuid.uuid4`
 

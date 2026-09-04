@@ -599,6 +599,8 @@ Message:
 
 หากมี Invitation เดิมที่ยังอยู่ในสถานะ `pending` ระบบจะคืน Invitation เดิมแทนการสร้างรายการซ้ำ
 
+หาก Invitation เดิมมีสถานะ `declined` หรือ `accepted` ระบบจะสร้าง Invitation ใหม่แทน (ไม่ reuse ตัวเดิม)
+
 **Response `201 Created`**
 
 ```json
@@ -639,6 +641,24 @@ Message:
 * Invitation ต้องมีสถานะ `pending`
 * Invitation ที่ถูกใช้แล้วหรือหมดอายุจะไม่สามารถ Accept ซ้ำได้
 
+### POST `/invitations/{invitation_id}/reject`
+
+ปฏิเสธ Invitation
+
+**Response `200 OK`**
+
+```json
+{
+  "message": "Invitation declined"
+}
+```
+
+ระบบตรวจสอบ:
+
+* Invitation ต้องเป็นของผู้ใช้ที่กำลัง Login
+* Invitation ต้องมีสถานะ `pending`
+* Invitation ที่ถูกใช้แล้วจะไม่สามารถ Reject ซ้ำได้ (HTTP `400 Bad Request`)
+
 ---
 
 ## 9. Notifications
@@ -667,11 +687,20 @@ GET /notifications?unread=1
     "message": "คุณถูกมอบหมายงาน \"ออกแบบ ER Diagram\" ในบอร์ด \"Process Dev\"",
     "task": "uuid-or-null",
     "task_title": "ออกแบบ ER Diagram",
+    "invitation_id": "uuid-or-null",
+    "invitation_status": "pending|accepted|declined-or-null",
+    "board_name": "Process Dev",
     "is_read": false,
     "created_at": "..."
   }
 ]
 ```
+
+**Fields เพิ่มเติม:**
+
+* `invitation_id` — UUID ของ Invitation ที่เชื่อมโยง (มีค่าเฉพาะ invitation notifications)
+* `invitation_status` — สถานะปัจจุบันของ Invitation (`pending`, `accepted`, `declined`)
+* `board_name` — ชื่อ Board ที่เกี่ยวข้อง (มีค่าเมื่อเป็น invitation หรือ task notification)
 
 ### PATCH `/notifications/{notification_id}/read`
 
@@ -702,7 +731,7 @@ WS /ws/notifications/?token=<access_token>
 ```
 
 * **Auth:** ส่ง Access Token ผ่าน Query Parameter `token` (Browser WebSocket API ไม่สามารถตั้ง HTTP Header ได้)
-* **Transport:** WebSocket ผ่าน Vite Proxy (`/ws` ด้วย `ws: true`) ทั้งในโหมด Dev และ Preview
+* **Transport:** WebSocket ผ่าน Nginx Reverse Proxy (`/ws/*` → backend:8000 พร้อม Upgrade headers)
 
 **Inbound Message**
 

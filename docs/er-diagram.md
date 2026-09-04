@@ -101,6 +101,7 @@ erDiagram
         uuid id PK
         uuid user_id FK "users.id"
         uuid task_id FK "tasks.id - nullable"
+        uuid invitation_id FK "invitations.id - nullable"
         varchar type "assignment | system"
         varchar message "max 500"
         boolean is_read "default false"
@@ -125,6 +126,7 @@ erDiagram
 | Users → Invitations     | 1 : N       | `invitations.invited_by` | User สามารถเป็นผู้ส่ง Invitation หลายรายการ                         |
 | Users → Notifications   | 1 : N       | `notifications.user_id`  | User สามารถมี Notification หลายรายการ                               |
 | Tasks → Notifications   | 1 : N       | `notifications.task_id`  | Notification สามารถอ้างอิง Task ได้ โดยเป็นความสัมพันธ์แบบ Nullable |
+| Invitations → Notifications | 1 : N   | `notifications.invitation_id` | Invitation สามารถเชื่อมโยงกับ Notification ได้ (Linked notification สำหรับ invitation event) |
 
 ---
 
