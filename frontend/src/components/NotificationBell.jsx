@@ -20,11 +20,26 @@ export default function NotificationBell() {
     setActing(inviteId)
     try {
       await api.post(`/invitations/${inviteId}/${action}`)
-      // Mark notification as read after accept/reject
+      // Update local state so UI switches from buttons to status label
+      setNotifications((prev) =>
+        prev.map((n) =>
+          n.id === notifId
+            ? { ...n, invitation_status: action === 'accept' ? 'accepted' : 'declined', is_read: true }
+            : n,
+        ),
+      )
       await markRead(notifId)
+      window.location.reload()
     } catch (err) {
-      // If invitation already processed (400), still mark as read
+      // If invitation already processed (400), still update UI + mark as read
       if (err.response?.status === 400) {
+        setNotifications((prev) =>
+          prev.map((n) =>
+            n.id === notifId
+              ? { ...n, invitation_status: action === 'accept' ? 'accepted' : 'declined', is_read: true }
+              : n,
+          ),
+        )
         await markRead(notifId)
       } else {
         console.error(`Failed to ${action} invitation`, err)

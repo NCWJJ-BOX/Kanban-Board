@@ -315,6 +315,24 @@ class TaskAssigneeRemoveView(APIView):
         return Response(TaskSerializer(task).data)
 
 
+
+
+class UserSearchView(APIView):
+    """GET /users/search?q=term — find users by email prefix (for invite autocomplete)."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        q = request.query_params.get('q', '').strip()
+        if len(q) < 2:
+            return Response([])
+        users = User.objects.filter(
+            Q(email__istartswith=q) | Q(username__istartswith=q)
+        ).exclude(pk=request.user.pk).order_by('email')[:8]
+        return Response([
+            {'id': str(u.id), 'email': u.email, 'username': u.username}
+            for u in users
+        ])
+
 # ------------------------- Invitations -------------------------
 
 class BoardInviteView(APIView):
@@ -341,10 +359,9 @@ class BoardInviteView(APIView):
         if user and existing.status == Invitation.Status.PENDING and \
                 not BoardMember.objects.filter(board=board, user=user).exists():
             Notification.objects.get_or_create(
-                user=user, type=Notification.Type.SYSTEM,
+                user=user, type=Notification.Type.SYSTEM, invitation=existing,
                 defaults={
                     'message': f'คุณได้รับคำเชิญเข้าร่วมบอร์ด "{board.name}"',
-                    'invitation': existing,
                 },
             )
         return Response(InvitationSerializer(existing).data, status=status.HTTP_201_CREATED)

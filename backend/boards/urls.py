@@ -1,5 +1,5 @@
 from django.urls import path
-from boards.views import (
+from boards.views import (UserSearchView,
     BoardColumnListCreateView, BoardDetailView, BoardInviteView, BoardListCreateView,
     BoardMemberRemoveView, BoardMembersView, BoardTagListCreateView,
     ColumnDetailView, ColumnTaskListCreateView, InvitationAcceptView, InvitationListView, InvitationRejectView, InvitationRejectView,
@@ -36,5 +36,6 @@ urlpatterns = [
 
     # Notifications
     path('notifications', NotificationListView.as_view(), name='notification-list'),
+    path('users/search', UserSearchView.as_view(), name='user-search'),
     path('notifications/<uuid:notification_id>/read', NotificationReadView.as_view(), name='notification-read'),
 ]

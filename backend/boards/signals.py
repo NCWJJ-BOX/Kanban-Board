@@ -84,10 +84,13 @@ def _notification_created(sender, instance, created, **kwargs):
     channel_layer = get_channel_layer()
     if channel_layer is None:
         return
-    async_to_sync(channel_layer.group_send)(
-        f'notifications_{instance.user_id}',
-        {
-            'type': 'notification.new',
-            'notification': NotificationSerializer(instance).data,
-        },
-    )
+    try:
+        async_to_sync(channel_layer.group_send)(
+            f'notifications_{instance.user_id}',
+            {
+                'type': 'notification.new',
+                'notification': NotificationSerializer(instance).data,
+            },
+        )
+    except Exception:
+        pass  # notification push is fire-and-forget; don't crash the request

@@ -22,6 +22,18 @@ export default function Boards() {
       .finally(() => setLoading(false))
   }, [])
 
+  // Re-fetch boards when an invitation is accepted (lightweight AJAX)
+  useEffect(() => {
+    function onBoardsChanged() {
+      api
+        .get('/boards')
+        .then((res) => setBoards(res.data))
+        .catch(() => {})
+    }
+    window.addEventListener('kanban:boards-changed', onBoardsChanged)
+    return () => window.removeEventListener('kanban:boards-changed', onBoardsChanged)
+  }, [])
+
   async function createBoard(e) {
     e.preventDefault()
     setSubmitting(true)

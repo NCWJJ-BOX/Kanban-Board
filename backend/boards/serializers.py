@@ -181,11 +181,12 @@ class InvitationCreateSerializer(serializers.ModelSerializer):
 class NotificationSerializer(serializers.ModelSerializer):
     task_title = serializers.CharField(source='task.title', read_only=True, default=None)
     invitation_id = serializers.UUIDField(source='invitation.id', read_only=True, default=None)
+    invitation_status = serializers.CharField(source='invitation.status', read_only=True, default=None)
     board_name = serializers.SerializerMethodField()
 
     class Meta:
         model = Notification
-        fields = ['id', 'type', 'message', 'task', 'task_title', 'invitation_id', 'board_name', 'is_read', 'created_at']
+        fields = ['id', 'type', 'message', 'task', 'task_title', 'invitation_id', 'invitation_status', 'board_name', 'is_read', 'created_at']
 
     def get_board_name(self, obj):
         if obj.invitation:
