@@ -327,11 +327,16 @@ class BoardInviteView(APIView):
         serializer = InvitationCreateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         email = serializer.validated_data['email'].lower()
-        existing, _ = Invitation.objects.get_or_create(
-            board=board, email=email,
-            defaults={'role': serializer.validated_data['role'],
-                      'invited_by': request.user},
-        )
+        # Only reuse a PENDING invitation; declined/accepted ones get a fresh invite
+        existing = Invitation.objects.filter(
+            board=board, email=email, status=Invitation.Status.PENDING
+        ).first()
+        if existing is None:
+            existing = Invitation.objects.create(
+                board=board, email=email,
+                role=serializer.validated_data['role'],
+                invited_by=request.user,
+            )
         user = User.objects.filter(email=email).first()
         if user and existing.status == Invitation.Status.PENDING and \
                 not BoardMember.objects.filter(board=board, user=user).exists():
