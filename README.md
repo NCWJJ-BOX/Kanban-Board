@@ -1,6 +1,7 @@
 # Kanban-Board
 
 ระบบ **Kanban Board แบบ Full-Stack** สำหรับจัดการงานด้วยการลากและวาง (Drag-and-Drop) พัฒนาด้วย **Python + Django REST Framework** สำหรับ Backend API, **React + Vite** สำหรับ Frontend และ **PostgreSQL 16** สำหรับฐานข้อมูล โดยใช้ **Docker Compose** สำหรับจัดการ Services ของระบบ
+<img width="1917" height="907" alt="image" src="https://github.com/user-attachments/assets/a784a168-6450-48f7-a5f3-82c4bbf57dec" />
 
 ## ฟีเจอร์หลัก
 
