@@ -51,7 +51,7 @@ Authorization: Bearer <access_token>
 * `401 Unauthorized` — Authentication ไม่ถูกต้องหรือ Token ไม่ถูกต้อง
 * `403 Forbidden` — ไม่มีสิทธิ์ดำเนินการ
 * `404 Not Found` — ไม่พบ Resource
-* `409 Conflict` — Resource ซ้ำ เช่น Username หรือ Email
+* `409 Conflict` — Resource ซ้ำ เช่น Email
 
 ### Permission Model
 
@@ -101,7 +101,7 @@ Authorization: Bearer <access_token>
 }
 ```
 
-**Response `409 Conflict` — Username หรือ Email ซ้ำ**
+**Response `409 Conflict` — Email ซ้ำ**
 
 ```json
 {
@@ -609,7 +609,7 @@ Message:
 }
 ```
 
-### GET `/invitations`
+### GET `/api/v1/invitations/mine`
 
 ดึง Invitation ที่ผู้ใช้ปัจจุบันได้รับและยังอยู่ในสถานะ `pending`
 

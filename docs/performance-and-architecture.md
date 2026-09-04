@@ -574,7 +574,7 @@ PgBouncer
 Configuration ปัจจุบันยังมีค่าที่เหมาะกับ Development Environment เช่น:
 
 ```text
-DEBUG=1
+DEBUG=0
 SECRET_KEY=<development value>
 ALLOWED_HOSTS=*
 ```

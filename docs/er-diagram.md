@@ -294,7 +294,6 @@ UNIQUE(task, user)
 
 ```text
 UNIQUE(email)
-UNIQUE(username)
 ```
 
 ป้องกันบัญชีที่ใช้ Email หรือ Username ซ้ำกัน
