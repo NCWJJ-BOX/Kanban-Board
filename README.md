@@ -11,7 +11,7 @@
 * รองรับการจัดการสมาชิกภายใน Board
 * มีระบบ Notification สำหรับการเชิญสมาชิกและกิจกรรมที่เกี่ยวข้องกับ Board
 * รองรับ JWT Authentication ผ่าน `djangorestframework-simplejwt`
-* รองรับ Django Admin ที่ `/admin/` สำหรับการจัดการระบบโดย Superuser
+
 
 ## Tech Stack
 
