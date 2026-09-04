@@ -402,8 +402,11 @@ class BoardMembersView(generics.ListAPIView):
         return get_object_or_404(Board, pk=self.kwargs['board_id'])
 
     def get_queryset(self):
-        board = self.get_board()
-        return User.objects.filter(board_memberships__board=board)
+        return User.objects.filter(board_memberships__board=self.get_board())
+
+    def list(self, request, *args, **kwargs):
+        self.check_object_permissions(request, self.get_board())
+        return super().list(request, *args, **kwargs)
 
 
 class BoardMemberRemoveView(APIView):
