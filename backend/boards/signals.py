@@ -1,11 +1,14 @@
-"""Invalidate board detail cache whenever a board's data changes."""
+"""Invalidate board detail cache and push live notifications on data changes."""
+from asgiref.sync import async_to_sync
+from channels.layers import get_channel_layer
 from django.db.models.signals import post_delete, post_save
 from django.dispatch import receiver
 
 from boards.cache import bump_board
 from boards.models import (
-    Board, BoardMember, Column, Tag, Task, TaskAssignee, TaskTag,
+    Board, BoardMember, Column, Notification, Tag, Task, TaskAssignee, TaskTag,
 )
+from boards.serializers import NotificationSerializer
 
 
 def _board_id_of_task(instance):
@@ -67,3 +70,24 @@ def _task_assignee_changed(sender, instance, **kwargs):
     board_id = _board_id_of_task(instance)
     if board_id:
         bump_board(board_id)
+
+
+@receiver(post_save, sender=Notification)
+def _notification_created(sender, instance, created, **kwargs):
+    """Push new notifications to the owner's WebSocket group in real time.
+
+    Runs within the request that created the notification; the channel layer
+    send is fire-and-forget (no-op when the user has no open socket).
+    """
+    if not created:
+        return
+    channel_layer = get_channel_layer()
+    if channel_layer is None:
+        return
+    async_to_sync(channel_layer.group_send)(
+        f'notifications_{instance.user_id}',
+        {
+            'type': 'notification.new',
+            'notification': NotificationSerializer(instance).data,
+        },
+    )
