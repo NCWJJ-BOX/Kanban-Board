@@ -1,63 +1,112 @@
 # Kanban-Board
 
-A full-stack drag-and-drop kanban board — React + Vite frontend backed by a Django REST Framework API and PostgreSQL 16, orchestrated with Docker Compose.
+ระบบ **Kanban Board แบบ Full-Stack** สำหรับจัดการงานด้วยการลากและวาง (Drag-and-Drop) พัฒนาด้วย **Python + Django REST Framework** สำหรับ Backend API, **React + Vite** สำหรับ Frontend และ **PostgreSQL 16** สำหรับฐานข้อมูล โดยใช้ **Docker Compose** สำหรับจัดการ Services ของระบบ
 
-## Features
+## ฟีเจอร์หลัก
 
-- Drag-and-drop cards across columns and reorder cards within a column (@dnd-kit)
-- Multiple boards, each with its own columns, cards, and tags
-- Card tagging, assignees, and per-card detail editing
-- Board member invitations (accept/decline) and member management
-- Notifications for invitations and board activity
-- JWT authentication (djangorestframework-simplejwt)
-- Duplicate column/tag names are rejected with a clean `HTTP 400` field-level error — no more 500s
-- The frontend blocks known-duplicate column names client-side (no duplicate request is ever sent) and shows the error inline in the add-column form
-- Django admin at `/admin/` for superuser management
+* รองรับการลากและวางการ์ดข้าม Column และจัดลำดับการ์ดภายใน Column ด้วย `@dnd-kit`
+* รองรับการสร้างและจัดการหลาย Board โดยแต่ละ Board มี Column, Card และ Tag เป็นของตัวเอง
+* รองรับการเพิ่ม Tag, กำหนดผู้รับผิดชอบ (Assignee) และแก้ไขรายละเอียดของ Card
+* รองรับการเชิญสมาชิกเข้า Board พร้อมการยอมรับหรือปฏิเสธคำเชิญ
+* รองรับการจัดการสมาชิกภายใน Board
+* มีระบบ Notification สำหรับการเชิญสมาชิกและกิจกรรมที่เกี่ยวข้องกับ Board
+* รองรับ JWT Authentication ผ่าน `djangorestframework-simplejwt`
+* รองรับ Django Admin ที่ `/admin/` สำหรับการจัดการระบบโดย Superuser
 
 ## Tech Stack
 
-| Layer      | Technology |
-|------------|------------|
-| Frontend   | React 19, Vite 8, @dnd-kit (core/sortable/utilities), react-router-dom 7, axios, oxlint |
-| Backend    | Django 6, Django REST Framework, SimpleJWT, django-cors-headers |
-| Database   | PostgreSQL 16 |
-| Tooling    | Docker Compose, pgAdmin 4 (web UI) |
+| Layer               | Technology                                                                              |
+| ------------------- | --------------------------------------------------------------------------------------- |
+| **Backend**         | **Python 3, Django 6, Django REST Framework, SimpleJWT, django-cors-headers**           |
+| Frontend            | React 19, Vite 8, @dnd-kit (core/sortable/utilities), react-router-dom 7, Axios, Oxlint |
+| Database            | PostgreSQL 16                                                                           |
+| Containerization    | Docker, Docker Compose                                                                  |
+| Database Management | pgAdmin 4                                                                               |
 
-## Project Structure
+## Python Backend
 
+Backend พัฒนาด้วย **Python 3 และ Django REST Framework** โดยรับผิดชอบ REST API, Authentication, Authorization, Data Validation และ Business Logic ของระบบ
+
+โครงสร้าง Backend หลักแบ่งออกเป็น:
+
+* `accounts/` — จัดการ User และ JWT Authentication
+* `boards/` — จัดการ Board, Column, Task, Tag, Member, Invitation และ Notification
+* `models.py` — กำหนด Data Models และ Database Constraints
+* `serializers.py` — Validation และการแปลงข้อมูลระหว่าง JSON กับ Django Models
+* `views.py` — จัดการ HTTP Request/Response และ Business Logic
+* `permissions.py` — ตรวจสอบสิทธิ์ตาม Membership และ Role ของ Board
+* `urls.py` — กำหนด Routing ของ REST API
+
+### Backend Flow
+
+```text
+HTTP Request
+     │
+     ▼
+Django REST Framework
+     │
+     ├── JWT Authentication
+     ├── Permission Check
+     ├── Serializer Validation
+     ├── Business Logic
+     │
+     ▼
+Django ORM
+     │
+     ▼
+PostgreSQL 16
 ```
+
+## โครงสร้างโปรเจกต์
+
+```text
 Kanban-Board/
-├── backend/                 # Django REST Framework API
-│   ├── config/              # Project settings + root URL config (admin/ + api/v1/)
-│   ├── accounts/            # User accounts + JWT auth endpoints
-│   ├── boards/              # Boards, columns, tasks, tags, invitations, notifications
-│   │   ├── models.py        # Data models (incl. per-board unique column/tag names)
-│   │   ├── serializers.py   # Validation (duplicate name → 400 field errors)
-│   │   ├── views.py         # API views (incl. IntegrityError → 400 race guard)
-│   │   ├── urls.py          # /api/v1/ endpoint map
-│   │   └── permissions.py   # Board membership permissions
+├── backend/                     # Python + Django REST Framework
+│   ├── config/                  # Django Project Configuration
+│   │   └── ...                  # Settings และ Root URL
+│   │
+│   ├── accounts/                # User และ JWT Authentication
+│   │   └── ...
+│   │
+│   ├── boards/                  # Kanban Business Logic
+│   │   ├── models.py            # Data Models และ Constraints
+│   │   ├── serializers.py       # Validation / Serialization
+│   │   ├── views.py             # REST API Views
+│   │   ├── permissions.py       # Board Access Control
+│   │   └── urls.py              # API Routes
+│   │
 │   ├── manage.py
-│   └── requirements.txt
-├── frontend/                # React + Vite SPA
+│   └── requirements.txt         # Python Dependencies
+│
+├── frontend/                    # React + Vite SPA
 │   └── src/
-│       ├── api.js           # Axios instance (JWT, base URL)
-│       ├── auth.jsx         # Auth context
-│       ├── components/      # Reusable UI components
-│       ├── hooks/           # Custom hooks
-│       └── pages/           # Route pages (Board, Kanban board view, auth, ...)
-├── docs/                    # Design docs (API design, ER diagram, performance)
-├── docker-compose.yml       # db + backend + pgadmin + frontend orchestration
+│       ├── api.js               # Axios Instance และ JWT
+│       ├── auth.jsx             # Authentication Context
+│       ├── components/          # Reusable UI Components
+│       ├── hooks/               # Custom Hooks
+│       └── pages/               # Application Pages
+│
+├── docs/                        # API Design, ER Diagram และ Performance
+├── docker-compose.yml           # Docker Services
 └── README.md
 ```
 
 ## Architecture / Services
 
-- **db** — PostgreSQL 16, exposed on host `5432`, named volume `pgdata`, healthchecked with `pg_isready`
-- **backend** — Django/DRF API, exposed on host `8000`, `./backend` mounted live into the container
-- **pgadmin** — pgAdmin 4 web UI, exposed on host `5050` (default login `admin@kanban.dev` / `admin`)
-- **frontend** — builds and serves the production bundle via `npm run preview`, exposed on host `5174` (container port `5173`); proxies API calls to `http://backend:8000`
+ระบบประกอบด้วย 4 Services ที่จัดการผ่าน Docker Compose:
 
-## Setup
+* **db** — PostgreSQL 16 สำหรับจัดเก็บข้อมูล เปิดใช้งาน Port `5432` บน Host ใช้ Named Volume `pgdata` และมี Health Check ผ่าน `pg_isready`
+* **backend** — Python + Django REST Framework API เปิดใช้งาน Port `8000` และ Mount โฟลเดอร์ `./backend` แบบ Bind Mount เพื่อรองรับการแก้ไข Backend Code ระหว่างการพัฒนา
+* **pgAdmin** — Web UI สำหรับจัดการ PostgreSQL เปิดใช้งาน Port `5050`
+* **frontend** — React Application ที่ Build เป็น Production Bundle และให้บริการผ่าน Vite Preview Server โดยเปิด Port `5174` บน Host และ Port `5173` ภายใน Container
+
+Frontend ติดต่อ Backend ผ่าน Docker Network โดยใช้:
+
+```text
+http://backend:8000
+```
+
+## การติดตั้งและเริ่มต้นใช้งาน
 
 ```bash
 git clone https://github.com/NCWJJ-BOX/Kanban-Board.git
@@ -65,66 +114,129 @@ cd Kanban-Board
 docker compose up --build
 ```
 
-Environment defaults (all overridable via a `.env` file or shell):
+### Environment Variables
 
-| Variable               | Default          |
-|------------------------|------------------|
-| `POSTGRES_DB`          | `kanban`         |
-| `POSTGRES_USER`        | `kanban`         |
-| `POSTGRES_PASSWORD`    | `kanban`         |
-| `PGADMIN_EMAIL`        | `admin@kanban.dev` |
-| `PGADMIN_PASSWORD`     | `admin`          |
+สามารถกำหนดค่า Environment Variables ผ่านไฟล์ `.env` หรือ Shell Environment ได้
 
-Create a Django superuser to access `http://localhost:5050` (pgAdmin) and `http://localhost:8000/admin/`:
+| Variable            | Default            |
+| ------------------- | ------------------ |
+| `POSTGRES_DB`       | `kanban`           |
+| `POSTGRES_USER`     | `kanban`           |
+| `POSTGRES_PASSWORD` | `kanban`           |
+| `PGADMIN_EMAIL`     | `admin@kanban.dev` |
+| `PGADMIN_PASSWORD`  | `admin`            |
+
+### สร้าง Django Superuser
 
 ```bash
 docker compose exec backend python manage.py createsuperuser
 ```
 
+หลังจากสร้าง Superuser แล้ว สามารถเข้าใช้งานได้ที่:
+
+* Django Admin: `http://localhost:8000/admin/`
+* pgAdmin: `http://localhost:5050`
+
 ## URLs
 
-| Service  | URL                        |
-|----------|----------------------------|
-| Frontend | http://localhost:5174      |
-| Backend  | http://localhost:8000      |
-| Admin    | http://localhost:8000/admin/ |
-| pgAdmin  | http://localhost:5050      |
+| Service      | URL                            |
+| ------------ | ------------------------------ |
+| Frontend     | `http://localhost:5174`        |
+| Backend      | `http://localhost:8000`        |
+| Django Admin | `http://localhost:8000/admin/` |
+| pgAdmin      | `http://localhost:5050`        |
 
 ## API
 
-All endpoints live under `/api/v1/` (no trailing slashes). Authentication via JWT (`Authorization: Bearer <token>`).
+API ทั้งหมดอยู่ภายใต้:
 
-**Auth (accounts)**
-- `POST /api/v1/auth/login` / `POST /api/v1/auth/refresh` — obtain / refresh JWT tokens
+```text
+/api/v1/
+```
 
-**Boards**
-- `GET /api/v1/boards` — list boards
-- `POST /api/v1/boards` — create a board
-- `GET /api/v1/boards/{board_id}` — board detail (with columns, tags, members)
-- `POST /api/v1/boards/{board_id}/columns` — add a column *(duplicate names → `400` field error)*
-- `POST /api/v1/boards/{board_id}/tags` — add a tag *(duplicate names → `400` field error)*
-- `POST /api/v1/boards/{board_id}/invite` — invite a member
-- `GET /api/v1/boards/{board_id}/members` / `DELETE /api/v1/boards/{board_id}/members/{user_id}`
+ระบบใช้ JWT Authentication โดยส่ง Access Token ผ่าน HTTP Header:
 
-**Columns**
-- `PATCH/DELETE /api/v1/columns/{column_id}`
-- `POST /api/v1/columns/{column_id}/tasks` — add a task to a column
+```http
+Authorization: Bearer <token>
+```
 
-**Tasks**
-- `GET/PATCH/DELETE /api/v1/tasks/{task_id}`
-- `POST /api/v1/tasks/{task_id}/move` — move between columns / reorder
-- `POST/DELETE /api/v1/tasks/{task_id}/tags[/{tag_id}]` — tag management
-- `POST/DELETE /api/v1/tasks/{task_id}/assignees[/{user_id}]` — assignee management
+### Authentication
 
-**Invitations & Notifications**
-- `GET /api/v1/invitations/mine` — my pending invitations
-- `POST /api/v1/invitations/{id}/accept` — accept an invitation
-- `GET /api/v1/notifications` — list notifications
-- `POST /api/v1/notifications/{notification_id}/read` — mark as read
+* `POST /api/v1/auth/login` — เข้าสู่ระบบและรับ JWT Tokens
+* `POST /api/v1/auth/refresh` — ขอ Access Token ใหม่จาก Refresh Token
 
-## Notes & Troubleshooting
+### Boards
 
-- **Duplicate column/tag names** — the API enforces per-board uniqueness and returns a clean `HTTP 400` with a field error message (no more `IntegrityError` → 500). The frontend additionally blocks known-duplicate column names *before* sending a request, so the browser never fires a 400-producing POST; the server-side check remains as a backstop for races. The error is shown inline in the add-column form and clears when you type or the board reloads.
-- **Frontend is a production build** — the `frontend` service runs `npm run preview` (Vite preview server) against the built bundle, not the dev server. Rebuild after frontend changes: `docker compose exec frontend npm run build && docker compose restart frontend`.
-- **Live backend reload** — `./backend` is bind-mounted into the container, so backend code changes hot-reload via Django's runserver.
-- **First login** — the API returns `401` for unauthenticated requests; log in first to obtain a JWT.
+* `GET /api/v1/boards` — ดึงรายการ Board
+* `POST /api/v1/boards` — สร้าง Board
+* `GET /api/v1/boards/{board_id}` — ดึงรายละเอียด Board พร้อม Column, Tag และ Member
+* `POST /api/v1/boards/{board_id}/columns` — เพิ่ม Column
+* `POST /api/v1/boards/{board_id}/tags` — เพิ่ม Tag
+* `POST /api/v1/boards/{board_id}/invite` — เชิญสมาชิกเข้า Board
+* `GET /api/v1/boards/{board_id}/members` — ดึงรายชื่อสมาชิก
+* `DELETE /api/v1/boards/{board_id}/members/{user_id}` — นำสมาชิกออกจาก Board
+
+### Columns
+
+* `PATCH /api/v1/columns/{column_id}` — แก้ไข Column
+* `DELETE /api/v1/columns/{column_id}` — ลบ Column
+* `POST /api/v1/columns/{column_id}/tasks` — เพิ่ม Task ใน Column
+
+### Tasks
+
+* `GET /api/v1/tasks/{task_id}` — ดึงรายละเอียด Task
+* `PATCH /api/v1/tasks/{task_id}` — แก้ไข Task
+* `DELETE /api/v1/tasks/{task_id}` — ลบ Task
+* `POST /api/v1/tasks/{task_id}/move` — ย้าย Task ระหว่าง Column หรือเปลี่ยนลำดับ
+* `POST /api/v1/tasks/{task_id}/tags` — เพิ่ม Tag ให้ Task
+* `DELETE /api/v1/tasks/{task_id}/tags/{tag_id}` — ลบ Tag ออกจาก Task
+* `POST /api/v1/tasks/{task_id}/assignees` — เพิ่มผู้รับผิดชอบ
+* `DELETE /api/v1/tasks/{task_id}/assignees/{user_id}` — ยกเลิกผู้รับผิดชอบ
+
+### Invitations & Notifications
+
+* `GET /api/v1/invitations/mine` — ดึงคำเชิญที่รอดำเนินการของผู้ใช้
+* `POST /api/v1/invitations/{id}/accept` — ยอมรับคำเชิญ
+* `GET /api/v1/notifications` — ดึงรายการ Notification
+* `POST /api/v1/notifications/{notification_id}/read` — เปลี่ยน Notification เป็นอ่านแล้ว
+
+
+
+### Frontend Production Build
+
+Frontend ใช้:
+
+```bash
+npm run preview
+```
+
+เพื่อให้บริการ Production Bundle ผ่าน Vite Preview Server
+
+หากมีการแก้ไข Frontend ให้ Build ใหม่ด้วย:
+
+```bash
+docker compose exec frontend npm run build
+docker compose restart frontend
+```
+
+### Backend Live Reload
+
+โฟลเดอร์:
+
+```text
+./backend
+```
+
+ถูก Bind Mount เข้าไปใน Backend Container ทำให้เมื่อแก้ไข Python/Django Source Code ระบบสามารถ Reload ผ่าน Django `runserver` ได้โดยไม่ต้อง Build Docker Image ใหม่ทุกครั้ง
+
+### การเข้าสู่ระบบครั้งแรก
+
+Endpoint ที่ต้อง Authentication จะตอบกลับ `401 Unauthorized` หาก Request ยังไม่มี JWT Token
+
+ให้เข้าสู่ระบบผ่าน:
+
+```text
+POST /api/v1/auth/login
+```
+
+เพื่อรับ Access Token จากนั้นนำ Token ไปใช้กับ API ที่ต้อง Authentication
